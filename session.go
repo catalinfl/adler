@@ -59,6 +59,28 @@ func (s *Session) close() {
 	}
 }
 
+func (s *Session) readPump() {
+loop:
+	for {
+		message, op, err := wsutil.ReadClientData(s.Conn)
+		if err != nil {
+			s.adler.handlers.errorHandler(s, err)
+			break loop
+		}
+
+		go s.handleMessage(op, message)
+	}
+}
+
+func (s *Session) handleMessage(op ws.OpCode, message []byte) {
+	switch op {
+	case ws.OpText:
+		s.adler.handlers.messageHandler(s, message)
+	case ws.OpBinary:
+		s.adler.handlers.messageHandlerBinary(s, message)
+	}
+}
+
 func (s *Session) writePump() {
 	ticker := time.NewTicker(s.adler.Config.PingPeriod)
 	defer ticker.Stop()

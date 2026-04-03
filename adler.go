@@ -73,6 +73,16 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	a.handlers.connectHandler(session)
+	go session.writePump()
+	session.readPump()
+
+	if !a.hub.isClosed() {
+		a.hub.unregister(session)
+	}
+
+	session.close()
+	a.handlers.disconnectHandler(session)
 	return nil
 }
 
