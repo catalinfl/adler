@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
@@ -66,7 +67,7 @@ loop:
 	for {
 		select {
 		case message := <-s.output:
-			err := wsutil.WriteClientMessage(s.Conn, 0x8, message.content)
+			err := s.write(message)
 			if err != nil {
 				s.adler.handlers.errorHandler(s, err)
 				break loop
@@ -85,12 +86,19 @@ loop:
 
 // write sends data from server to client
 // through his connection
-func (s *Session) write() {
+func (s *Session) write(message message) error {
 	if s.isClosed() {
-
+		return ErrWriteClosed
 	}
+
+	err := wsutil.WriteServerMessage(s.Conn, ws.OpText, message.content)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *Session) ping() {
-
+	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
 }

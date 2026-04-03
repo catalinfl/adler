@@ -14,15 +14,22 @@ var (
 
 // hub stores main server logic
 type hub struct {
-	mu       sync.RWMutex
-	sessions map[*Session]struct{}
-	rooms    map[string]*Room
-	closed   atomic.Bool
+	mu          sync.RWMutex
+	sessions    map[*Session]struct{}
+	rooms       map[string]*Room
+	closed      atomic.Bool
+	sessionPool sync.Pool
 }
 
 func newHub() *hub {
 	hub := &hub{
 		sessions: make(map[*Session]struct{}),
+		rooms:    nil,
+		sessionPool: sync.Pool{
+			New: func() any {
+				return make([]*Session, 0)
+			},
+		},
 	}
 	hub.closed.Store(false)
 	return hub
@@ -91,9 +98,17 @@ func (h *hub) exit(message message) error {
 
 func (h *hub) broadcast(message message) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	sp := h.sessionPool.Get().(*[]*Session)
+	sessions := (*sp)[:0]
+	clear(sessions)
 
 	for session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+
+	h.mu.RUnlock()
+
+	for _, session := range sessions {
 		if session == nil {
 			continue
 		}
@@ -102,4 +117,7 @@ func (h *hub) broadcast(message message) {
 			session.writeMessage(message)
 		}
 	}
+
+	*sp = sessions
+	h.sessionPool.Put(sp)
 }
