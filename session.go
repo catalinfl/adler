@@ -124,3 +124,17 @@ func (s *Session) write(message message) error {
 func (s *Session) ping() {
 	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
 }
+
+var ErrSessionClosed = errors.New("session is closed")
+
+func (s *Session) Write(msg []byte) error {
+	if s.isClosed() {
+		return ErrNilSession
+	}
+
+	s.writeMessage(message{
+		content: msg,
+	})
+
+	return nil
+}
