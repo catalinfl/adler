@@ -1,10 +1,14 @@
 package adler
 
-import "time"
+import (
+	"time"
+
+	"github.com/gobwas/ws"
+)
 
 type message struct {
-	// t         int
-	content   []byte
-	filter    filterFunc
-	writeWait time.Duration
+	messageType ws.OpCode
+	content     []byte
+	filter      filterFunc
+	writeWait   time.Duration
 }

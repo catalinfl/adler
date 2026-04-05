@@ -41,6 +41,21 @@ func (s *Session) writeMessage(message message) {
 	}
 }
 
+// write sends data from server to client
+// through his connection
+func (s *Session) write(message message) error {
+	if s.isClosed() {
+		return ErrWriteClosed
+	}
+
+	err := wsutil.WriteServerMessage(s.Conn, message.messageType, message.content)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (s *Session) isClosed() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -106,21 +121,6 @@ loop:
 	s.close()
 }
 
-// write sends data from server to client
-// through his connection
-func (s *Session) write(message message) error {
-	if s.isClosed() {
-		return ErrWriteClosed
-	}
-
-	err := wsutil.WriteServerMessage(s.Conn, ws.OpText, message.content)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (s *Session) ping() {
 	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
 }
@@ -133,7 +133,21 @@ func (s *Session) Write(msg []byte) error {
 	}
 
 	s.writeMessage(message{
-		content: msg,
+		content:     msg,
+		messageType: ws.OpText,
+	})
+
+	return nil
+}
+
+func (s *Session) Close() error {
+	if s.isClosed() {
+		return ErrSessionClosed
+	}
+
+	s.writeMessage(message{
+		messageType: ws.OpClose,
+		content:     []byte{},
 	})
 
 	return nil
