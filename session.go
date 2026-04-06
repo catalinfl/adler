@@ -23,6 +23,7 @@ type Session struct {
 	mu         sync.RWMutex
 	closed     bool
 	adler      *Adler
+	reader     *wsutil.Reader
 }
 
 var (
@@ -109,7 +110,7 @@ func (s *Session) close() {
 
 // readPump continuously reads client frames and dispatches them to handlers.
 func (s *Session) readPump() {
-	dispatchAsync := s.adler == nil || s.adler.Config == nil || s.adler.Config.DispatchAsync
+	dispatchAsync := s.adler.Config.DispatchAsync
 
 loop:
 	for {
@@ -222,7 +223,7 @@ func (s *Session) Close(msg ...[]byte) error {
 // Set ensures session key storage is initialized.
 func (s *Session) Set(key string, value any) {
 	s.mu.Lock()
-	defer s.mu.RLock()
+	defer s.mu.Unlock()
 
 	if s.Keys == nil {
 		s.Keys = make(map[string]any)
