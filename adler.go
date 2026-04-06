@@ -52,6 +52,11 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		return ErrHubClosed
 	}
 
+	outputBufferSize := 1
+	if a.Config != nil && a.Config.MessageBufferSize > 0 {
+		outputBufferSize = int(a.Config.MessageBufferSize)
+	}
+
 	conn, err := a.upgradeWebSocket(r, w)
 	if err != nil {
 		return err
@@ -62,10 +67,11 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		Request:    r,
 		Protocol:   r.Proto,
 		Conn:       conn,
-		output:     make(chan message),
+		output:     make(chan message, outputBufferSize),
 		outputDone: make(chan struct{}),
 		mu:         sync.RWMutex{},
 		closed:     false,
+		adler:      a,
 	}
 
 	if err := a.hub.register(session); err != nil {

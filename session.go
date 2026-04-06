@@ -1,6 +1,7 @@
 package adler
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ type Session struct {
 	Keys       map[string]any
 	output     chan message
 	outputDone chan struct{}
+	writeMu    sync.Mutex
 	mu         sync.RWMutex
 	closed     bool
 	adler      *Adler
@@ -28,6 +30,7 @@ var (
 	ErrBufferFull  = errors.New("Buffer is full")
 )
 
+// writeMessage enqueues an outbound message for asynchronous writing.
 func (s *Session) writeMessage(message message) {
 	if s.isClosed() {
 		s.adler.handlers.errorHandler(s, ErrWriteClosed)
@@ -41,12 +44,14 @@ func (s *Session) writeMessage(message message) {
 	}
 }
 
-// write sends data from server to client
-// through his connection
-func (s *Session) write(message message) error {
+// writeFrame writes a websocket frame directly to the client connection.
+func (s *Session) writeFrame(message message) error {
 	if s.isClosed() {
 		return ErrWriteClosed
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
 	err := wsutil.WriteServerMessage(s.Conn, message.messageType, message.content)
 	if err != nil {
@@ -56,46 +61,7 @@ func (s *Session) write(message message) error {
 	return nil
 }
 
-func (s *Session) isClosed() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.closed
-}
-
-func (s *Session) close() {
-	s.mu.Lock()
-	closed := s.closed
-	s.closed = true
-	s.mu.Unlock()
-
-	if !closed {
-		s.Conn.Close()
-		close(s.outputDone)
-	}
-}
-
-func (s *Session) readPump() {
-loop:
-	for {
-		message, op, err := wsutil.ReadClientData(s.Conn)
-		if err != nil {
-			s.adler.handlers.errorHandler(s, err)
-			break loop
-		}
-
-		go s.handleMessage(op, message)
-	}
-}
-
-func (s *Session) handleMessage(op ws.OpCode, message []byte) {
-	switch op {
-	case ws.OpText:
-		s.adler.handlers.messageHandler(s, message)
-	case ws.OpBinary:
-		s.adler.handlers.messageHandlerBinary(s, message)
-	}
-}
-
+// writePump drains the output queue and periodically sends ping frames.
 func (s *Session) writePump() {
 	ticker := time.NewTicker(s.adler.Config.PingPeriod)
 	defer ticker.Stop()
@@ -104,7 +70,7 @@ loop:
 	for {
 		select {
 		case message := <-s.output:
-			err := s.write(message)
+			err := s.writeFrame(message)
 			if err != nil {
 				s.adler.handlers.errorHandler(s, err)
 				break loop
@@ -121,34 +87,144 @@ loop:
 	s.close()
 }
 
+// isClosed reports whether the session is already closed.
+func (s *Session) isClosed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.closed
+}
+
+// close marks the session as closed and releases connection resources once.
+func (s *Session) close() {
+	s.mu.Lock()
+	closed := s.closed
+	s.closed = true
+	s.mu.Unlock()
+
+	if !closed {
+		s.Conn.Close()
+		close(s.outputDone)
+	}
+}
+
+// readPump continuously reads client frames and dispatches them to handlers.
+func (s *Session) readPump() {
+	dispatchAsync := s.adler == nil || s.adler.Config == nil || s.adler.Config.DispatchAsync
+
+loop:
+	for {
+		message, op, err := wsutil.ReadClientData(s.Conn)
+		if err != nil {
+			s.adler.handlers.errorHandler(s, err)
+			break loop
+		}
+
+		if dispatchAsync {
+			go s.handleMessage(op, message)
+		} else {
+			s.handleMessage(op, message)
+		}
+	}
+}
+
+// handleMessage routes text and binary frames to the configured handlers.
+func (s *Session) handleMessage(op ws.OpCode, message []byte) {
+	switch op {
+	case ws.OpText:
+		s.adler.handlers.messageHandler(s, message)
+	case ws.OpBinary:
+		s.adler.handlers.messageHandlerBinary(s, message)
+	}
+}
+
+// ping sends a websocket ping control frame.
 func (s *Session) ping() {
 	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
 }
 
 var ErrSessionClosed = errors.New("session is closed")
 
-func (s *Session) Write(msg []byte) error {
-	if s.isClosed() {
-		return ErrNilSession
-	}
-
-	s.writeMessage(message{
-		content:     msg,
-		messageType: ws.OpText,
-	})
-
-	return nil
+// WriteText queues a text message to be sent to the client.
+func (s *Session) WriteText(message []byte) error {
+	return s.write(message, ws.OpText)
 }
 
-func (s *Session) Close() error {
+func (s *Session) write(msg []byte, code ws.OpCode, deadline ...time.Duration) error {
 	if s.isClosed() {
 		return ErrSessionClosed
 	}
 
-	s.writeMessage(message{
-		messageType: ws.OpClose,
-		content:     []byte{},
-	})
+	m := message{
+		messageType: code,
+		content:     msg,
+	}
+	if len(deadline) > 0 {
+		m.writeWait = deadline[0]
+	}
 
+	s.writeMessage(m)
 	return nil
+}
+
+// WriteTextWithDeadline queues a text message with a custom write deadline.
+func (s *Session) WriteTextWithDeadline(message []byte, deadline time.Duration) error {
+	return s.write(message, ws.OpText, deadline)
+}
+
+// WriteJSON marshals v to JSON and queues it as a text message.
+func (s *Session) WriteJSON(v any) error {
+	jsonContent, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	return s.write(jsonContent, ws.OpText)
+}
+
+// WriteJSONWithDeadline queues a JSON payload with a custom write deadline.
+func (s *Session) WriteJSONWithDeadline(message any, deadline time.Duration) error {
+	jsonContent, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	return s.write(jsonContent, ws.OpText, deadline)
+}
+
+// WriteBinary queues a binary message to be sent to the client.
+func (s *Session) WriteBinary(msg []byte) error {
+	return s.write(msg, ws.OpBinary)
+}
+
+// WriteBinaryWithDeadline queues a binary message with a custom write deadline.
+func (s *Session) WriteBinaryWithDeadline(msg []byte, deadline time.Duration) error {
+	return s.write(msg, ws.OpBinary, deadline)
+}
+
+// Close queues a websocket close frame, optionally with a close payload.
+func (s *Session) Close(msg ...[]byte) error {
+	if s.isClosed() {
+		return ErrSessionClosed
+	}
+
+	message := message{
+		messageType: ws.OpClose,
+	}
+
+	if len(msg) > 0 {
+		message.content = msg[0]
+	}
+
+	s.writeMessage(message)
+	return nil
+}
+
+// Set ensures session key storage is initialized.
+func (s *Session) Set(key string, value any) {
+	s.mu.Lock()
+	defer s.mu.RLock()
+
+	if s.Keys == nil {
+		s.Keys = make(map[string]any)
+	}
 }

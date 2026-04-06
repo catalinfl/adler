@@ -8,6 +8,7 @@ type Config struct {
 	PingPeriod        time.Duration
 	MaxMessageSize    int64
 	MessageBufferSize int32
+	DispatchAsync     bool
 }
 
 func newConfig() *Config {
@@ -17,5 +18,6 @@ func newConfig() *Config {
 		PingPeriod:        54 * time.Second,
 		MaxMessageSize:    2 << 10, // 1 kB
 		MessageBufferSize: 2 << 8,  // 512B
+		DispatchAsync:     true,
 	}
 }
