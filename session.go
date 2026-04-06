@@ -1,6 +1,7 @@
 package adler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net"
@@ -24,6 +25,7 @@ type Session struct {
 	closed     bool
 	adler      *Adler
 	reader     *wsutil.Reader
+	readBuf    bytes.Buffer
 }
 
 var (
@@ -112,18 +114,27 @@ func (s *Session) close() {
 func (s *Session) readPump() {
 	dispatchAsync := s.adler.Config.DispatchAsync
 
-loop:
 	for {
-		message, op, err := wsutil.ReadClientData(s.Conn)
+		header, err := s.reader.NextFrame()
 		if err != nil {
 			s.adler.handlers.errorHandler(s, err)
-			break loop
+			return
 		}
 
+		s.readBuf.Reset()
+		if _, err := s.readBuf.ReadFrom(s.reader); err != nil {
+			s.adler.handlers.errorHandler(s, err)
+			return
+		}
+
+		payload := s.readBuf.Bytes()
+
 		if dispatchAsync {
-			go s.handleMessage(op, message)
+			cp := make([]byte, len(payload))
+			copy(cp, payload)
+			go s.handleMessage(header.OpCode, cp)
 		} else {
-			s.handleMessage(op, message)
+			s.handleMessage(header.OpCode, payload)
 		}
 	}
 }

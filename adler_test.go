@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -489,4 +490,51 @@ func TestHandleRequest_ReturnsErrHubClosed(t *testing.T) {
 	if !errors.Is(err, ErrHubClosed) {
 		t.Fatalf("unexpected error: got %v want %v", err, ErrHubClosed)
 	}
+}
+
+// BenchmarkLargePayload_Adler
+func BenchmarkLargePayload_Adler(b *testing.B) {
+	b.ReportAllocs()
+
+	payload := make([]byte, 64*1024) // 64 kB
+	for i := range payload {
+		payload[i] = byte(i % 256)
+	}
+
+	a := newTestAdler(b)
+	a.Config.DispatchAsync = false
+
+	received := make(chan struct{}, 1)
+
+	a.HandleMessage(func(s *Session, msg []byte) {
+		_ = s.WriteText(msg)
+	})
+
+	a.HandleConnect(func(*Session) { received <- struct{}{} })
+
+	wsURL := startWebSocketServer(b, a)
+	conn := dialWebSocketClient(b, wsURL)
+	waitForSignal(b, received, "connect")
+
+	reader := wsutil.NewReader(conn, ws.StateClientSide)
+
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := wsutil.WriteClientText(conn, payload); err != nil {
+			b.Fatal(err)
+		}
+
+		hdr, err := reader.NextFrame()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			b.Fatal(err)
+		}
+		_ = hdr
+	}
+
+	b.StopTimer()
 }

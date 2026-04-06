@@ -63,9 +63,6 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	// must have a reader to reduce number of allocations
-	reader := wsutil.NewReader(conn, ws.StateServerSide)
-
 	session := &Session{
 		Keys:       make(map[string]any),
 		Request:    r,
@@ -76,8 +73,12 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		mu:         sync.RWMutex{},
 		closed:     false,
 		adler:      a,
-		reader:     reader,
 	}
+
+	// must have a reader to reduce number of allocations per session
+	session.reader = wsutil.NewReader(conn, ws.StateServerSide)
+
+	// session.readBuf.Grow(64 * 1024)
 
 	if err := a.hub.register(session); err != nil {
 		_ = conn.Close()
