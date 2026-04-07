@@ -33,7 +33,7 @@ const SmallBuffer int = 256
 
 type Adler struct {
 	Config   *Config
-	hub      *hub
+	core     *core
 	handlers handlers
 }
 
@@ -43,14 +43,14 @@ func (a *Adler) New() *Adler {
 
 	return &Adler{
 		Config:   newConfig(),
-		hub:      newHub(),
+		core:     newCore(),
 		handlers: handlers,
 	}
 }
 
 func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
-	if a.hub.isClosed() {
-		return ErrHubClosed
+	if a.core.isClosed() {
+		return ErrCoreClosed
 	}
 
 	outputBufferSize := 1
@@ -80,7 +80,7 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 
 	// session.readBuf.Grow(64 * 1024)
 
-	if err := a.hub.register(session); err != nil {
+	if err := a.core.register(session); err != nil {
 		_ = conn.Close()
 		return err
 	}
@@ -89,8 +89,8 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	go session.writePump()
 	session.readPump()
 
-	if !a.hub.isClosed() {
-		a.hub.unregister(session)
+	if !a.core.isClosed() {
+		a.core.unregister(session)
 	}
 
 	session.close()
@@ -99,8 +99,8 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *Adler) broadcast(msg []byte, messageType ws.OpCode, fn ...func(*Session) bool) error {
-	if a.hub.isClosed() {
-		return ErrHubClosed
+	if a.core.isClosed() {
+		return ErrCoreClosed
 	}
 
 	var filter func(*Session) bool
@@ -109,7 +109,7 @@ func (a *Adler) broadcast(msg []byte, messageType ws.OpCode, fn ...func(*Session
 		filter = fn[0]
 	}
 
-	a.hub.broadcast(message{
+	a.core.broadcast(message{
 		messageType: messageType,
 		content:     msg,
 		filter:      filter,
@@ -135,19 +135,19 @@ func (a *Adler) BroadcastBinaryFilter(msg []byte, fn func(*Session) bool) error 
 }
 
 func (a *Adler) Len() int {
-	return a.hub.len()
+	return a.core.len()
 }
 
 func (a *Adler) IsClosed() bool {
-	return a.hub.isClosed()
+	return a.core.isClosed()
 }
 
 func (a *Adler) Close() error {
-	if a.hub.isClosed() {
-		return ErrHubClosed
+	if a.core.isClosed() {
+		return ErrCoreClosed
 	}
 
-	a.hub.exit(message{
+	a.core.exit(message{
 		messageType: ws.OpClose,
 		content:     []byte(""),
 	})

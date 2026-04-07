@@ -7,13 +7,13 @@ import (
 )
 
 var (
-	ErrHubClosed         = errors.New("hub is closed")
+	ErrCoreClosed        = errors.New("core is closed")
 	ErrNilSession        = errors.New("nil session")
 	ErrAlreadyRegistered = errors.New("session is already registered")
 )
 
-// hub stores main server logic
-type hub struct {
+// core stores main server logic
+type core struct {
 	mu          sync.RWMutex
 	sessions    map[*Session]struct{}
 	rooms       map[string]*Room
@@ -21,8 +21,8 @@ type hub struct {
 	sessionPool sync.Pool
 }
 
-func newHub() *hub {
-	hub := &hub{
+func newCore() *core {
+	core := &core{
 		sessions: make(map[*Session]struct{}),
 		rooms:    nil,
 		sessionPool: sync.Pool{
@@ -31,21 +31,21 @@ func newHub() *hub {
 			},
 		},
 	}
-	hub.closed.Store(false)
-	return hub
+	core.closed.Store(false)
+	return core
 }
 
-func (h *hub) isClosed() bool {
+func (h *core) isClosed() bool {
 	return h.closed.Load()
 }
 
-func (h *hub) len() int {
+func (h *core) len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.sessions)
 }
 
-func (h *hub) register(s *Session) error {
+func (h *core) register(s *Session) error {
 	if s == nil {
 		return ErrNilSession
 	}
@@ -53,7 +53,7 @@ func (h *hub) register(s *Session) error {
 	defer h.mu.Unlock()
 
 	if h.isClosed() {
-		return ErrHubClosed
+		return ErrCoreClosed
 	}
 
 	if _, exists := h.sessions[s]; exists {
@@ -64,7 +64,7 @@ func (h *hub) register(s *Session) error {
 	return nil
 }
 
-func (h *hub) unregister(s *Session) error {
+func (h *core) unregister(s *Session) error {
 	if s == nil {
 		return ErrNilSession
 	}
@@ -72,19 +72,19 @@ func (h *hub) unregister(s *Session) error {
 	defer h.mu.Unlock()
 
 	if !h.closed.Load() {
-		return ErrHubClosed
+		return ErrCoreClosed
 	}
 
 	delete(h.sessions, s)
 	return nil
 }
 
-func (h *hub) exit(message message) error {
+func (h *core) exit(message message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if !h.closed.Load() {
-		return ErrHubClosed
+		return ErrCoreClosed
 	}
 
 	for session := range h.sessions {
@@ -96,7 +96,7 @@ func (h *hub) exit(message message) error {
 	return nil
 }
 
-func (h *hub) broadcast(message message) {
+func (h *core) broadcast(message message) {
 	h.mu.RLock()
 	sp := h.sessionPool.Get().(*[]*Session)
 	sessions := (*sp)[:0]

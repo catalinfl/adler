@@ -7,7 +7,7 @@ import (
 	"github.com/gobwas/ws"
 )
 
-func BenchmarkHubBroadcast(b *testing.B) {
+func BenchmarkCoreBroadcast(b *testing.B) {
 	const payloadSize = 1024
 	payload := make([]byte, payloadSize)
 	for i := range payload {
@@ -18,7 +18,7 @@ func BenchmarkHubBroadcast(b *testing.B) {
 
 	for _, sessionCount := range []int{1, 16, 128, 512} {
 		b.Run(fmt.Sprintf("sessions_%d", sessionCount), func(b *testing.B) {
-			h := newHub()
+			h := newCore()
 			stopDrain := make(chan struct{})
 
 			for i := 0; i < sessionCount; i++ {
