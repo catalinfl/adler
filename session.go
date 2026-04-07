@@ -13,6 +13,7 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
+// Session represents a single WebSocket client connection.
 type Session struct {
 	Conn       net.Conn
 	Request    *http.Request
@@ -55,6 +56,20 @@ func (s *Session) writeFrame(message message) error {
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	writeWait := message.writeWait
+	if writeWait <= 0 && s.adler != nil && s.adler.Config != nil {
+		writeWait = s.adler.Config.WriteWait
+	}
+
+	if writeWait > 0 {
+		if err := s.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+			return err
+		}
+		defer func() {
+			_ = s.Conn.SetWriteDeadline(time.Time{})
+		}()
+	}
 
 	err := wsutil.WriteServerMessage(s.Conn, message.messageType, message.content)
 	if err != nil {

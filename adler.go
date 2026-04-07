@@ -98,38 +98,71 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (a *Adler) Broadcast(msg []byte) error {
+func (a *Adler) broadcast(msg []byte, messageType ws.OpCode, fn ...func(*Session) bool) error {
 	if a.hub.isClosed() {
 		return ErrHubClosed
 	}
 
-	message := message{
-		messageType: ws.OpText,
-		content:     msg,
+	var filter func(*Session) bool
+
+	if len(fn) > 0 {
+		filter = fn[0]
 	}
 
-	a.hub.broadcast(message)
+	a.hub.broadcast(message{
+		messageType: messageType,
+		content:     msg,
+		filter:      filter,
+	})
+
 	return nil
 }
 
+func (a *Adler) Broadcast(msg []byte) error {
+	return a.broadcast(msg, ws.OpText)
+}
+
 func (a *Adler) BroadcastFilter(msg []byte, fn func(*Session) bool) error {
+	return a.broadcast(msg, ws.OpText, fn)
+}
+
+func (a *Adler) BroadcastBinary(msg []byte) error {
+	return a.broadcast(msg, ws.OpBinary)
+}
+
+func (a *Adler) BroadcastBinaryFilter(msg []byte, fn func(*Session) bool) error {
+	return a.broadcast(msg, ws.OpBinary, fn)
+}
+
+func (a *Adler) Len() int {
+	return a.hub.len()
+}
+
+func (a *Adler) IsClosed() bool {
+	return a.hub.isClosed()
+}
+
+func (a *Adler) Close() error {
 	if a.hub.isClosed() {
 		return ErrHubClosed
 	}
 
-	message := message{
-		filter:      fn,
-		content:     msg,
-		messageType: ws.OpText,
-	}
-
-	a.hub.broadcast(message)
+	a.hub.exit(message{
+		messageType: ws.OpClose,
+		content:     []byte(""),
+	})
 	return nil
 }
 
 func (a *Adler) BroadcastOthers(msg []byte, s *Session) error {
 	return a.BroadcastFilter(msg, func(other *Session) bool {
 		return other != s
+	})
+}
+
+func (a *Adler) SendTo(msg []byte, s *Session) error {
+	return a.BroadcastFilter(msg, func(other *Session) bool {
+		return other == s
 	})
 }
 
