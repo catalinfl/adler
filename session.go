@@ -142,14 +142,12 @@ func (s *Session) readPump() {
 			return
 		}
 
-		payload := s.readBuf.Bytes()
-
 		if dispatchAsync {
-			cp := make([]byte, len(payload))
-			copy(cp, payload)
+			cp := make([]byte, len(s.readBuf.Bytes()))
+			copy(cp, s.readBuf.Bytes())
 			go s.handleMessage(header.OpCode, cp)
 		} else {
-			s.handleMessage(header.OpCode, payload)
+			s.handleMessage(header.OpCode, s.readBuf.Bytes())
 		}
 	}
 }

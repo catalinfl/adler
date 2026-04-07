@@ -481,14 +481,14 @@ func TestHandleRequest_ReturnsErrHubClosed(t *testing.T) {
 	t.Parallel()
 
 	a := newTestAdler(t)
-	a.hub.closed.Store(true)
+	a.core.closed.Store(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 	res := httptest.NewRecorder()
 
 	err := a.HandleRequest(res, req)
-	if !errors.Is(err, ErrHubClosed) {
-		t.Fatalf("unexpected error: got %v want %v", err, ErrHubClosed)
+	if !errors.Is(err, ErrCoreClosed) {
+		t.Fatalf("unexpected error: got %v want %v", err, ErrCoreClosed)
 	}
 }
 
