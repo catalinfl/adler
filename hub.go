@@ -100,7 +100,6 @@ func (h *hub) broadcast(message message) {
 	h.mu.RLock()
 	sp := h.sessionPool.Get().(*[]*Session)
 	sessions := (*sp)[:0]
-	clear(sessions)
 
 	for session := range h.sessions {
 		sessions = append(sessions, session)
@@ -118,6 +117,7 @@ func (h *hub) broadcast(message message) {
 		}
 	}
 
-	*sp = sessions
+	clear(*sp)
+	*sp = sessions[:0]
 	h.sessionPool.Put(sp)
 }

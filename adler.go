@@ -98,6 +98,41 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (a *Adler) Broadcast(msg []byte) error {
+	if a.hub.isClosed() {
+		return ErrHubClosed
+	}
+
+	message := message{
+		messageType: ws.OpText,
+		content:     msg,
+	}
+
+	a.hub.broadcast(message)
+	return nil
+}
+
+func (a *Adler) BroadcastFilter(msg []byte, fn func(*Session) bool) error {
+	if a.hub.isClosed() {
+		return ErrHubClosed
+	}
+
+	message := message{
+		filter:      fn,
+		content:     msg,
+		messageType: ws.OpText,
+	}
+
+	a.hub.broadcast(message)
+	return nil
+}
+
+func (a *Adler) BroadcastOthers(msg []byte, s *Session) error {
+	return a.BroadcastFilter(msg, func(other *Session) bool {
+		return other != s
+	})
+}
+
 func (a *Adler) upgradeWebSocket(r *http.Request, w http.ResponseWriter) (net.Conn, error) {
 	conn, _, _, err := ws.UpgradeHTTP(r, w)
 	if err != nil {
