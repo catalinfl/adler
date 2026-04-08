@@ -3,7 +3,6 @@ package adler
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"sync"
@@ -18,7 +17,7 @@ type Session struct {
 	Conn       net.Conn
 	Request    *http.Request
 	Protocol   string
-	Keys       map[string]any
+	Store      map[string]any
 	output     chan message
 	outputDone chan struct{}
 	writeMu    sync.Mutex
@@ -28,11 +27,6 @@ type Session struct {
 	reader     *wsutil.Reader
 	readBuf    bytes.Buffer
 }
-
-var (
-	ErrWriteClosed = errors.New("Write session is closed")
-	ErrBufferFull  = errors.New("Buffer is full")
-)
 
 // writeMessage enqueues an outbound message for asynchronous writing.
 func (s *Session) writeMessage(message message) {
@@ -142,12 +136,14 @@ func (s *Session) readPump() {
 			return
 		}
 
+		payload := s.readBuf.Bytes()
+
 		if dispatchAsync {
-			cp := make([]byte, len(s.readBuf.Bytes()))
-			copy(cp, s.readBuf.Bytes())
+			cp := make([]byte, len(payload))
+			copy(cp, payload)
 			go s.handleMessage(header.OpCode, cp)
 		} else {
-			s.handleMessage(header.OpCode, s.readBuf.Bytes())
+			s.handleMessage(header.OpCode, payload)
 		}
 	}
 }
@@ -167,13 +163,12 @@ func (s *Session) ping() {
 	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
 }
 
-var ErrSessionClosed = errors.New("session is closed")
-
 // WriteText queues a text message to be sent to the client.
 func (s *Session) WriteText(message []byte) error {
 	return s.write(message, ws.OpText)
 }
 
+// write adds the message in queue through writeMessage.
 func (s *Session) write(msg []byte, code ws.OpCode, deadline ...time.Duration) error {
 	if s.isClosed() {
 		return ErrSessionClosed
@@ -248,8 +243,159 @@ func (s *Session) Close(msg ...[]byte) error {
 func (s *Session) Set(key string, value any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.Store[key] = value
+}
 
-	if s.Keys == nil {
-		s.Keys = make(map[string]any)
+func (s *Session) Get(key string) (any, error) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+	if !exists {
+		return nil, ErrKeyNotFound
 	}
+
+	return val, nil
+}
+
+func (s *Session) Unset(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.Store, key)
+}
+
+func (s *Session) Has(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_, exists := s.Store[key]
+	return exists
+}
+
+func (s *Session) SetNX(key string, value any) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, exists := s.Store[key]
+	if exists {
+		return false
+	}
+
+	s.Store[key] = value
+	return true
+}
+
+func (s *Session) Keys() []string {
+	keys := make([]string, len(s.Store))
+	i := 0
+
+	s.mu.RLock()
+	for k := range s.Store {
+		keys[i] = k
+		i++
+	}
+	s.mu.RUnlock()
+
+	return keys
+}
+
+func (s *Session) Values() []any {
+	values := make([]any, len(s.Store))
+	i := 0
+
+	s.mu.RLock()
+	for _, v := range s.Store {
+		values[i] = v
+		i++
+	}
+	s.mu.RUnlock()
+
+	return values
+}
+
+func (s *Session) GetString(key string) (string, bool) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+
+	if !exists {
+		return "", false
+	}
+
+	if v, ok := val.(string); ok {
+		return v, true
+	}
+
+	return "", false
+}
+
+func (s *Session) GetInt(key string) (int, bool) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+
+	if !exists {
+		return 0, false
+	}
+
+	if v, ok := val.(int); ok {
+		return v, true
+	}
+
+	return 0, false
+}
+
+func (s *Session) GetInt64(key string) (int64, bool) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+
+	if !exists {
+		return 0, false
+	}
+	if v, ok := val.(int64); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func (s *Session) GetFloat(key string) (float64, bool) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+
+	if !exists {
+		return 0, false
+	}
+	if v, ok := val.(float64); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func (s *Session) GetBool(key string) (bool, bool) {
+	s.mu.RLock()
+	val, exists := s.Store[key]
+	s.mu.RUnlock()
+
+	if !exists {
+		return false, false
+	}
+	if v, ok := val.(bool); ok {
+		return v, true
+	}
+	return false, false
+}
+
+func (s *Session) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.Store)
+}
+
+func (s *Session) LocalAddr() net.Addr {
+	return s.Conn.LocalAddr()
+}
+
+func (s *Session) RemoteAddr() net.Addr {
+	return s.Conn.RemoteAddr()
 }
