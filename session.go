@@ -22,6 +22,7 @@ type Session struct {
 	outputDone chan struct{}
 	writeMu    sync.Mutex
 	mu         sync.RWMutex
+	identity   string
 	closed     bool
 	adler      *Adler
 	reader     *wsutil.Reader
@@ -384,6 +385,53 @@ func (s *Session) GetBool(key string) (bool, bool) {
 		return v, true
 	}
 	return false, false
+}
+
+func (s *Session) Incr(key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ptr, exists := s.Store[key]
+	if !exists {
+		return 0, ErrKeyNotFound
+	}
+
+	p, ok := ptr.(*int64)
+	if !ok {
+		return 0, ErrTypeAssertionFailed
+	}
+	*p++
+	return *p, nil
+}
+
+func (s *Session) Decr(key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ptr, exists := s.Store[key]
+	if !exists {
+		return 0, ErrKeyNotFound
+	}
+
+	p, ok := ptr.(*int64)
+	if !ok {
+		return 0, ErrTypeAssertionFailed
+	}
+
+	*p--
+	return *p, nil
+}
+
+func (s *Session) SetIdentity(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.identity = id
+}
+
+func (s *Session) Identity() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.identity != ""
 }
 
 func (s *Session) Clear() {
