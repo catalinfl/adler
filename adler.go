@@ -64,7 +64,7 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	session := &Session{
-		Keys:       make(map[string]any),
+		Store:      make(map[string]any),
 		Request:    r,
 		Protocol:   r.Proto,
 		Conn:       conn,

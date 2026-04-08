@@ -1,15 +1,8 @@
 package adler
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
-)
-
-var (
-	ErrCoreClosed        = errors.New("core is closed")
-	ErrNilSession        = errors.New("nil session")
-	ErrAlreadyRegistered = errors.New("session is already registered")
 )
 
 // core stores main server logic
