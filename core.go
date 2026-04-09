@@ -20,7 +20,8 @@ func newCore() *core {
 		rooms:    nil,
 		sessionPool: sync.Pool{
 			New: func() any {
-				return make([]*Session, 0)
+				s := make([]*Session, 0)
+				return &s
 			},
 		},
 	}
@@ -64,7 +65,7 @@ func (h *core) unregister(s *Session) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.closed.Load() {
+	if h.closed.Load() {
 		return ErrCoreClosed
 	}
 
@@ -76,7 +77,7 @@ func (h *core) exit(message message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.closed.Load() {
+	if h.closed.Load() {
 		return ErrCoreClosed
 	}
 
@@ -110,7 +111,7 @@ func (h *core) broadcast(message message) {
 		}
 	}
 
-	clear(*sp)
+	clear(sessions)
 	*sp = sessions[:0]
 	h.sessionPool.Put(sp)
 }
