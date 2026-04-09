@@ -11,4 +11,5 @@ var (
 	ErrBufferFull          = errors.New("Buffer is full")
 	ErrSessionClosed       = errors.New("session is closed")
 	ErrTypeAssertionFailed = errors.New("type assertion failed")
+	ErrRoomClosed          = errors.New("room is closed")
 )
