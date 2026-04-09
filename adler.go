@@ -1,6 +1,7 @@
 package adler
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"sync"
@@ -14,6 +15,7 @@ type errorFunc func(*Session, error)
 type closeFunc func(*Session, int, string) error
 type sessionFunc func(*Session)
 type filterFunc func(*Session) bool
+type roomSessionFunc func(*Session, *Room)
 
 type handlers struct {
 	messageHandler           messageFunc
@@ -25,6 +27,8 @@ type handlers struct {
 	connectHandler           sessionFunc
 	disconnectHandler        sessionFunc
 	pongHandler              sessionFunc
+	onRoomLeave              roomSessionFunc
+	onRoomJoin               roomSessionFunc
 }
 
 const LargeBuffer int = 1024
@@ -35,6 +39,8 @@ type Adler struct {
 	Config   *Config
 	core     *core
 	handlers handlers
+	rooms    map[string]*Room
+	roomsMu  sync.RWMutex
 }
 
 func (a *Adler) New() *Adler {
@@ -45,6 +51,7 @@ func (a *Adler) New() *Adler {
 		Config:   newConfig(),
 		core:     newCore(),
 		handlers: handlers,
+		rooms:    make(map[string]*Room),
 	}
 }
 
@@ -134,6 +141,24 @@ func (a *Adler) BroadcastBinaryFilter(msg []byte, fn func(*Session) bool) error 
 	return a.broadcast(msg, ws.OpBinary, fn)
 }
 
+func (a *Adler) BroadcastJSON(v any) error {
+	content, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	return a.Broadcast(content)
+}
+
+func (a *Adler) BroadcastJSONFilter(v any, fn func(*Session) bool) error {
+	content, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	return a.BroadcastFilter(content, fn)
+}
+
 func (a *Adler) Len() int {
 	return a.core.len()
 }
@@ -154,6 +179,49 @@ func (a *Adler) Close() error {
 	return nil
 }
 
+func (a *Adler) NewRoom(name string) *Room {
+	a.roomsMu.Lock()
+	defer a.roomsMu.Unlock()
+
+	if a.rooms == nil {
+		a.rooms = make(map[string]*Room)
+	}
+
+	if r, ok := a.rooms[name]; ok {
+		return r
+	}
+
+	r := newRoom(name, a)
+	a.rooms[name] = r
+	return r
+}
+
+func (a *Adler) removeRoomIfEmpty(r *Room) {
+	if a == nil || r == nil {
+		return
+	}
+
+	if r.Len() != 0 {
+		return
+	}
+
+	a.roomsMu.Lock()
+	defer a.roomsMu.Unlock()
+
+	if a.rooms == nil {
+		return
+	}
+
+	current, ok := a.rooms[r.name]
+	if !ok || current != r {
+		return
+	}
+
+	if r.Len() == 0 {
+		delete(a.rooms, r.name)
+	}
+}
+
 func (a *Adler) BroadcastOthers(msg []byte, s *Session) error {
 	return a.BroadcastFilter(msg, func(other *Session) bool {
 		return other != s
@@ -172,6 +240,14 @@ func (a *Adler) upgradeWebSocket(r *http.Request, w http.ResponseWriter) (net.Co
 		return nil, err
 	}
 	return conn, nil
+}
+
+func (a *Adler) OnRoomJoin(fn func(*Session, *Room)) {
+	a.handlers.onRoomJoin = fn
+}
+
+func (a *Adler) OnRoomLeave(fn func(*Session, *Room)) {
+	a.handlers.onRoomLeave = fn
 }
 
 func (a *Adler) HandleConnect(fn func(*Session)) {
