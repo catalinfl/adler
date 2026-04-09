@@ -101,8 +101,6 @@ loop:
 			}
 		}
 	}
-
-	s.close()
 }
 
 // isClosed reports whether the session is already closed.
