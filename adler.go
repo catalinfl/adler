@@ -98,14 +98,34 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	go session.writePump()
 	session.readPump()
 
-	if !a.core.isClosed() {
+	if a.core.isClosed() {
 		a.core.unregister(session)
 	}
 
-	session.close()
+	session.mu.Lock()
+	room := session.room
+	session.room = nil
+	session.mu.Unlock()
+
+	if room != nil {
+		room.mu.Lock()
+		delete(room.sessions, session)
+		room.mu.Unlock()
+
+		if room.handlers.onLeave != nil {
+			room.handlers.onLeave(session)
+		}
+
+		if a.handlers.onRoomLeave != nil {
+			a.handlers.onRoomLeave(session, room)
+		}
+	}
+
 	if a.handlers.disconnectHandler != nil {
 		a.handlers.disconnectHandler(session)
 	}
+
+	session.close()
 	return nil
 }
 
