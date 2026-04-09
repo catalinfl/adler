@@ -23,11 +23,13 @@ type roomHandlers struct {
 }
 
 func newRoom(name string, a *Adler) *Room {
+	handlers := roomHandlers{}
 	room := &Room{
 		name:     name,
 		sessions: make(map[*Session]struct{}),
 		mu:       sync.RWMutex{},
 		adler:    a,
+		handlers: handlers,
 	}
 	room.closed.Store(false)
 	return room
@@ -65,9 +67,12 @@ func (r *Room) CloseRoom() {
 	r.closed.Store(true)
 }
 
-func (r *Room) Join(s *Session) {
-	if r.isClosed() || s == nil {
-		return
+func (r *Room) Join(s *Session) error {
+	if r.isClosed() {
+		return ErrRoomClosed
+	}
+	if s == nil {
+		return ErrSessionClosed
 	}
 
 	s.mu.Lock()
@@ -117,6 +122,7 @@ func (r *Room) Join(s *Session) {
 	if r.adler.handlers.onRoomJoin != nil {
 		r.adler.handlers.onRoomJoin(s, r)
 	}
+	return nil
 }
 
 // use leave to let session leave the current room
