@@ -57,6 +57,14 @@ func (r *Room) Sessions() []*Session {
 	return out
 }
 
+func (r *Room) OpenRoom() {
+	r.closed.Store(false)
+}
+
+func (r *Room) CloseRoom() {
+	r.closed.Store(true)
+}
+
 func (r *Room) Join(s *Session) {
 	if r.isClosed() || s == nil {
 		return
@@ -66,7 +74,15 @@ func (r *Room) Join(s *Session) {
 	// keep old room to clear the session from it
 	prev := s.room
 	// session will have s room
+	r.mu.Lock()
 	s.room = r
+
+	if r.sessions == nil {
+		r.sessions = make(map[*Session]struct{})
+	}
+
+	r.sessions[s] = struct{}{}
+	r.mu.Unlock()
 	s.mu.Unlock()
 
 	if prev != nil && prev != r {
@@ -83,30 +99,22 @@ func (r *Room) Join(s *Session) {
 			prev.handlers.onLeave(s)
 		}
 
-		if prev.adler != nil && prev.adler.handlers.onRoomLeave != nil {
+		if prev.adler.handlers.onRoomLeave != nil {
 			prev.adler.handlers.onRoomLeave(s, prev)
 		}
 
 		// remove previous room if it doesn't have sessions
 		// to-do config flag
-		if prevEmpty && prev.adler != nil {
+		if prevEmpty {
 			prev.adler.removeRoomIfEmpty(prev)
 		}
 	}
-
-	r.mu.Lock()
-	if r.sessions == nil {
-		r.sessions = make(map[*Session]struct{})
-	}
-	r.closed.Store(false)
-	r.sessions[s] = struct{}{}
-	r.mu.Unlock()
 
 	if r.handlers.onJoin != nil {
 		r.handlers.onJoin(s)
 	}
 
-	if r.adler != nil && r.adler.handlers.onRoomJoin != nil {
+	if r.adler.handlers.onRoomJoin != nil {
 		r.adler.handlers.onRoomJoin(s, r)
 	}
 }
@@ -124,8 +132,6 @@ func (r *Room) Leave(s *Session) {
 		return
 	}
 	s.room = nil
-	s.mu.Unlock()
-
 	r.mu.Lock()
 	delete(r.sessions, s)
 	empty := len(r.sessions) == 0
@@ -133,17 +139,18 @@ func (r *Room) Leave(s *Session) {
 		r.sessions = nil
 		r.closed.Store(true)
 	}
-	r.mu.Unlock()
+	r.mu.Unlock() // room mutex
+	s.mu.Unlock() // session mutex
 
 	if r.handlers.onLeave != nil {
 		r.handlers.onLeave(s)
 	}
 
-	if r.adler != nil && r.adler.handlers.onRoomLeave != nil {
+	if r.adler.handlers.onRoomLeave != nil {
 		r.adler.handlers.onRoomLeave(s, r)
 	}
 
-	if empty && r.adler != nil {
+	if empty {
 		r.adler.removeRoomIfEmpty(r)
 	}
 }

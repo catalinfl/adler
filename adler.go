@@ -201,11 +201,7 @@ func (a *Adler) NewRoom(name string) *Room {
 }
 
 func (a *Adler) removeRoomIfEmpty(r *Room) {
-	if a == nil || r == nil {
-		return
-	}
-
-	if r.Len() != 0 {
+	if r == nil || r.Len() != 0 {
 		return
 	}
 
