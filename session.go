@@ -24,6 +24,7 @@ type Session struct {
 	mu         sync.RWMutex
 	identity   string
 	closed     bool
+	room       *Room
 	adler      *Adler
 	reader     *wsutil.Reader
 	readBuf    bytes.Buffer
@@ -32,14 +33,18 @@ type Session struct {
 // writeMessage enqueues an outbound message for asynchronous writing.
 func (s *Session) writeMessage(message message) {
 	if s.isClosed() {
-		s.adler.handlers.errorHandler(s, ErrWriteClosed)
+		if s.adler.handlers.errorHandler != nil {
+			s.adler.handlers.errorHandler(s, ErrWriteClosed)
+		}
 		return
 	}
 
 	select {
 	case s.output <- message:
 	default:
-		s.adler.handlers.errorHandler(s, ErrBufferFull)
+		if s.adler.handlers.errorHandler != nil {
+			s.adler.handlers.errorHandler(s, ErrBufferFull)
+		}
 	}
 }
 
@@ -153,9 +158,13 @@ func (s *Session) readPump() {
 func (s *Session) handleMessage(op ws.OpCode, message []byte) {
 	switch op {
 	case ws.OpText:
-		s.adler.handlers.messageHandler(s, message)
+		if s.adler.handlers.messageHandler != nil {
+			s.adler.handlers.messageHandler(s, message)
+		}
 	case ws.OpBinary:
-		s.adler.handlers.messageHandlerBinary(s, message)
+		if s.adler.handlers.messageHandler != nil {
+			s.adler.handlers.messageHandlerBinary(s, message)
+		}
 	}
 }
 
@@ -446,4 +455,10 @@ func (s *Session) LocalAddr() net.Addr {
 
 func (s *Session) RemoteAddr() net.Addr {
 	return s.Conn.RemoteAddr()
+}
+
+func (s *Session) Room() *Room {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.room
 }
