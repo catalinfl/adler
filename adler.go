@@ -92,7 +92,9 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	a.handlers.connectHandler(session)
+	if a.handlers.connectHandler != nil {
+		a.handlers.connectHandler(session)
+	}
 	go session.writePump()
 	session.readPump()
 
@@ -101,7 +103,9 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	session.close()
-	a.handlers.disconnectHandler(session)
+	if a.handlers.disconnectHandler != nil {
+		a.handlers.disconnectHandler(session)
+	}
 	return nil
 }
 
