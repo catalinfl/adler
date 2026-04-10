@@ -15,11 +15,11 @@ import (
 // Session represents a single WebSocket client connection.
 type Session struct {
 	// Conn is the underlying websocket network connection.
-	Conn       net.Conn
+	Conn net.Conn
 	// Request is the original HTTP upgrade request.
-	Request    *http.Request
+	Request *http.Request
 	// Protocol is the HTTP protocol string used during upgrade.
-	Protocol   string
+	Protocol string
 	// Store is a per-session key-value store for user state.
 	Store      map[string]any
 	output     chan message
@@ -38,7 +38,9 @@ type Session struct {
 func (s *Session) writeMessage(message message) {
 	if s.isClosed() {
 		if s.adler.handlers.errorHandler != nil {
-			s.adler.handlers.errorHandler(s, ErrWriteClosed)
+			if s.adler.handlers.errorHandler != nil {
+				s.adler.handlers.errorHandler(s, ErrWriteClosed)
+			}
 		}
 		return
 	}
@@ -94,7 +96,9 @@ loop:
 		case message := <-s.output:
 			err := s.writeFrame(message)
 			if err != nil {
-				s.adler.handlers.errorHandler(s, err)
+				if s.adler.handlers.errorHandler != nil {
+					s.adler.handlers.errorHandler(s, err)
+				}
 				break loop
 			}
 		case <-ticker.C:
@@ -134,13 +138,17 @@ func (s *Session) readPump() {
 	for {
 		header, err := s.reader.NextFrame()
 		if err != nil {
-			s.adler.handlers.errorHandler(s, err)
+			if s.adler.handlers.errorHandler != nil {
+				s.adler.handlers.errorHandler(s, err)
+			}
 			return
 		}
 
 		s.readBuf.Reset()
 		if _, err := s.readBuf.ReadFrom(s.reader); err != nil {
-			s.adler.handlers.errorHandler(s, err)
+			if s.adler.handlers.errorHandler != nil {
+				s.adler.handlers.errorHandler(s, err)
+			}
 			return
 		}
 
@@ -164,7 +172,7 @@ func (s *Session) handleMessage(op ws.OpCode, message []byte) {
 			s.adler.handlers.messageHandler(s, message)
 		}
 	case ws.OpBinary:
-		if s.adler.handlers.messageHandler != nil {
+		if s.adler.handlers.messageHandlerBinary != nil {
 			s.adler.handlers.messageHandlerBinary(s, message)
 		}
 	}
