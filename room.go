@@ -79,7 +79,7 @@ func (r *Room) Join(s *Session) error {
 		return ErrRoomClosed
 	}
 	if s == nil {
-		return ErrSessionClosed
+		return ErrNilSession
 	}
 
 	s.mu.Lock()
