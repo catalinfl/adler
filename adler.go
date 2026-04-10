@@ -32,7 +32,6 @@ type handlers struct {
 }
 
 // Adler is the main websocket server orchestrator.
-//
 // It owns active sessions, rooms and all user-provided callbacks.
 type Adler struct {
 	// Config holds runtime behavior knobs used by session read/write loops.
@@ -60,7 +59,6 @@ func (a *Adler) New(options ...Option) *Adler {
 }
 
 // HandleRequest upgrades the HTTP request to websocket and serves the session.
-//
 // The call blocks until the websocket session exits.
 func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	if a.core.isClosed() {
@@ -105,10 +103,6 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	go session.writePump()
 	session.readPump()
 
-	if a.core.isClosed() {
-		a.core.unregister(session)
-	}
-
 	session.mu.Lock()
 	room := session.room
 	session.room = nil
@@ -128,11 +122,12 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	// connection must be unregistered forced after closing readPump
+	a.core.unregister(session)
+	session.close()
 	if a.handlers.disconnectHandler != nil {
 		a.handlers.disconnectHandler(session)
 	}
-
-	session.close()
 	return nil
 }
 
