@@ -38,9 +38,7 @@ type Session struct {
 func (s *Session) writeMessage(message message) {
 	if s.isClosed() {
 		if s.adler.handlers.errorHandler != nil {
-			if s.adler.handlers.errorHandler != nil {
-				s.adler.handlers.errorHandler(s, ErrWriteClosed)
-			}
+			s.adler.handlers.errorHandler(s, ErrWriteClosed)
 		}
 		return
 	}
@@ -64,7 +62,8 @@ func (s *Session) writeFrame(message message) error {
 	defer s.writeMu.Unlock()
 
 	writeWait := message.writeWait
-	if writeWait <= 0 && s.adler.Config != nil {
+	// if writeWait is not specified in message struct it will be added from config
+	if writeWait <= 0 {
 		writeWait = s.adler.Config.WriteWait
 	}
 
@@ -82,13 +81,30 @@ func (s *Session) writeFrame(message message) error {
 		return err
 	}
 
+	if s.adler.handlers.messageSentHandler != nil {
+		s.adler.handlers.messageSentHandler(s, message.content)
+	}
+	if s.adler.handlers.messageSentHandlerBinary != nil {
+		s.adler.handlers.messageSentHandlerBinary(s, message.content)
+	}
+
 	return nil
 }
 
 // writePump drains the output queue and periodically sends ping frames.
 func (s *Session) writePump() {
-	ticker := time.NewTicker(s.adler.Config.PingPeriod)
+	cfg := s.adler.Config
+	pingPeriod := cfg.PingPeriod
+	if pingPeriod <= 0 {
+		pingPeriod = 54 * time.Second
+	}
+
+	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
+
+	if cfg.PongWait > 0 {
+		s.Conn.SetReadDeadline(time.Now().Add(cfg.PongWait))
+	}
 
 loop:
 	for {
@@ -174,6 +190,10 @@ func (s *Session) handleMessage(op ws.OpCode, message []byte) {
 	case ws.OpBinary:
 		if s.adler.handlers.messageHandlerBinary != nil {
 			s.adler.handlers.messageHandlerBinary(s, message)
+		}
+	case ws.OpPong:
+		if s.adler.handlers.pongHandler != nil {
+			s.adler.handlers.pongHandler(s)
 		}
 	}
 }
