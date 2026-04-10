@@ -14,9 +14,13 @@ import (
 
 // Session represents a single WebSocket client connection.
 type Session struct {
+	// Conn is the underlying websocket network connection.
 	Conn       net.Conn
+	// Request is the original HTTP upgrade request.
 	Request    *http.Request
+	// Protocol is the HTTP protocol string used during upgrade.
 	Protocol   string
+	// Store is a per-session key-value store for user state.
 	Store      map[string]any
 	output     chan message
 	outputDone chan struct{}
@@ -58,7 +62,7 @@ func (s *Session) writeFrame(message message) error {
 	defer s.writeMu.Unlock()
 
 	writeWait := message.writeWait
-	if writeWait <= 0 && s.adler != nil && s.adler.Config != nil {
+	if writeWait <= 0 && s.adler.Config != nil {
 		writeWait = s.adler.Config.WriteWait
 	}
 
@@ -254,6 +258,7 @@ func (s *Session) Set(key string, value any) {
 	s.Store[key] = value
 }
 
+// Get returns the value stored under key or ErrKeyNotFound.
 func (s *Session) Get(key string) (any, error) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -265,12 +270,14 @@ func (s *Session) Get(key string) (any, error) {
 	return val, nil
 }
 
+// Unset removes key from the session store.
 func (s *Session) Unset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.Store, key)
 }
 
+// Has reports whether key exists in the session store.
 func (s *Session) Has(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -279,6 +286,8 @@ func (s *Session) Has(key string) bool {
 	return exists
 }
 
+// SetNX sets key only when it does not already exist.
+// It returns true when the value was written.
 func (s *Session) SetNX(key string, value any) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,6 +301,7 @@ func (s *Session) SetNX(key string, value any) bool {
 	return true
 }
 
+// Keys returns a snapshot of keys currently in the session store.
 func (s *Session) Keys() []string {
 	keys := make([]string, len(s.Store))
 	i := 0
@@ -306,6 +316,7 @@ func (s *Session) Keys() []string {
 	return keys
 }
 
+// Values returns a snapshot of values currently in the session store.
 func (s *Session) Values() []any {
 	values := make([]any, len(s.Store))
 	i := 0
@@ -320,6 +331,7 @@ func (s *Session) Values() []any {
 	return values
 }
 
+// GetString returns the string value for key and true on success.
 func (s *Session) GetString(key string) (string, bool) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -336,6 +348,7 @@ func (s *Session) GetString(key string) (string, bool) {
 	return "", false
 }
 
+// GetInt returns the int value for key and true on success.
 func (s *Session) GetInt(key string) (int, bool) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -352,6 +365,7 @@ func (s *Session) GetInt(key string) (int, bool) {
 	return 0, false
 }
 
+// GetInt64 returns the int64 value for key and true on success.
 func (s *Session) GetInt64(key string) (int64, bool) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -366,6 +380,7 @@ func (s *Session) GetInt64(key string) (int64, bool) {
 	return 0, false
 }
 
+// GetFloat returns the float64 value for key and true on success.
 func (s *Session) GetFloat(key string) (float64, bool) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -380,6 +395,7 @@ func (s *Session) GetFloat(key string) (float64, bool) {
 	return 0, false
 }
 
+// GetBool returns the bool value for key and true on success.
 func (s *Session) GetBool(key string) (bool, bool) {
 	s.mu.RLock()
 	val, exists := s.Store[key]
@@ -394,6 +410,7 @@ func (s *Session) GetBool(key string) (bool, bool) {
 	return false, false
 }
 
+// Incr increments an int64 pointer value stored at key and returns the result.
 func (s *Session) Incr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,6 +428,7 @@ func (s *Session) Incr(key string) (int64, error) {
 	return *p, nil
 }
 
+// Decr decrements an int64 pointer value stored at key and returns the result.
 func (s *Session) Decr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,32 +447,38 @@ func (s *Session) Decr(key string) (int64, error) {
 	return *p, nil
 }
 
+// SetIdentity sets a non-empty identity marker for the session.
 func (s *Session) SetIdentity(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.identity = id
 }
 
+// Identity reports whether the session currently has an identity set.
 func (s *Session) Identity() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.identity != ""
 }
 
+// Clear removes all key-value pairs from the session store.
 func (s *Session) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.Store)
 }
 
+// LocalAddr returns the local network address of the websocket connection.
 func (s *Session) LocalAddr() net.Addr {
 	return s.Conn.LocalAddr()
 }
 
+// RemoteAddr returns the remote network address of the websocket connection.
 func (s *Session) RemoteAddr() net.Addr {
 	return s.Conn.RemoteAddr()
 }
 
+// Room returns the room currently associated with the session.
 func (s *Session) Room() *Room {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

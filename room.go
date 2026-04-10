@@ -8,6 +8,7 @@ import (
 	"github.com/gobwas/ws"
 )
 
+// Room groups sessions under the same logical channel.
 type Room struct {
 	mu       sync.RWMutex
 	adler    *Adler
@@ -39,16 +40,19 @@ func (r *Room) isClosed() bool {
 	return r.closed.Load()
 }
 
+// Name returns the room identifier.
 func (r *Room) Name() string {
 	return r.name
 }
 
+// Len returns the number of sessions currently in the room.
 func (r *Room) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.sessions)
 }
 
+// Sessions returns a snapshot of current room members.
 func (r *Room) Sessions() []*Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -59,14 +63,17 @@ func (r *Room) Sessions() []*Session {
 	return out
 }
 
+// OpenRoom marks the room as open for Join calls.
 func (r *Room) OpenRoom() {
 	r.closed.Store(false)
 }
 
+// CloseRoom marks the room as closed for new Join calls.
 func (r *Room) CloseRoom() {
 	r.closed.Store(true)
 }
 
+// Join adds s to the room and removes it from any previous room.
 func (r *Room) Join(s *Session) error {
 	if r.isClosed() {
 		return ErrRoomClosed
@@ -125,8 +132,7 @@ func (r *Room) Join(s *Session) error {
 	return nil
 }
 
-// use leave to let session leave the current room
-// it sets s.room to nil for current room and deletes session from room
+// Leave removes s from the room if s is currently a member.
 func (r *Room) Leave(s *Session) {
 	if s == nil {
 		return
@@ -161,30 +167,37 @@ func (r *Room) Leave(s *Session) {
 	}
 }
 
+// HandleJoin registers a callback triggered after a session joins the room.
 func (r *Room) HandleJoin(fn func(*Session)) {
 	r.handlers.onJoin = fn
 }
 
+// HandleLeave registers a callback triggered after a session leaves the room.
 func (r *Room) HandleLeave(fn func(*Session)) {
 	r.handlers.onLeave = fn
 }
 
+// Broadcast sends a text websocket message to all room sessions.
 func (r *Room) Broadcast(msg []byte) {
 	r.broadcast(msg, ws.OpText, nil)
 }
 
+// BroadcastBinary sends a binary websocket message to all room sessions.
 func (r *Room) BroadcastBinary(msg []byte) {
 	r.broadcast(msg, ws.OpBinary, nil)
 }
 
+// BroadcastFilter sends a text websocket message to room sessions matching filter.
 func (r *Room) BroadcastFilter(msg []byte, filter func(*Session) bool) {
 	r.broadcast(msg, ws.OpText, filter)
 }
 
+// BroadcastJSON marshals v and sends it as a text websocket message.
 func (r *Room) BroadcastJSON(v any) error {
 	return r.BroadcastJSONFilter(v, nil)
 }
 
+// BroadcastJSONFilter marshals v and sends it as text to sessions matching filter.
 func (r *Room) BroadcastJSONFilter(v any, filter func(*Session) bool) error {
 	content, err := json.Marshal(v)
 	if err != nil {
