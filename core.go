@@ -65,19 +65,18 @@ func (h *core) register(s *Session) error {
 }
 
 // unregister removes a session from the active session set.
-func (h *core) unregister(s *Session) error {
+func (h *core) unregister(s *Session) {
 	if s == nil {
-		return ErrNilSession
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.closed.Load() {
-		return ErrCoreClosed
+		return
 	}
 
 	delete(h.sessions, s)
-	return nil
 }
 
 // exit sends a final message to all sessions and marks the core closed.
