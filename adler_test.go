@@ -1,540 +1,753 @@
-package adler
+package adler_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/catalinfl/adler"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
-func newTestAdler(tb testing.TB) *Adler {
-	tb.Helper()
-
-	a := (&Adler{}).New()
-	a.Config.PingPeriod = 24 * time.Hour
-	a.Config.MessageBufferSize = 8
-
-	// Set no-op handlers so tests only override the callbacks they care about.
-	a.HandleConnect(func(*Session) {})
-	a.HandleDisconnect(func(*Session) {})
-	a.HandleMessage(func(*Session, []byte) {})
-	a.HandleMessageBinary(func(*Session, []byte) {})
-	a.HandleError(func(*Session, error) {})
-
-	return a
+func wsURL(httpURL string) string {
+	return "ws" + strings.TrimPrefix(httpURL, "http")
 }
 
-func startWebSocketServer(tb testing.TB, a *Adler) string {
-	tb.Helper()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := a.HandleRequest(w, r); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-	}))
-	tb.Cleanup(server.Close)
-
-	return "ws" + strings.TrimPrefix(server.URL, "http")
+func waitSignal(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(msg)
+	}
 }
 
-func dialWebSocketClient(tb testing.TB, wsURL string) net.Conn {
-	tb.Helper()
+func waitBytes(t *testing.T, ch <-chan []byte, msg string) []byte {
+	t.Helper()
+	select {
+	case b := <-ch:
+		return b
+	case <-time.After(2 * time.Second):
+		t.Fatal(msg)
+		return nil
+	}
+}
 
-	conn, _, _, err := ws.Dial(context.Background(), wsURL)
+func waitSession(t *testing.T, ch <-chan *adler.Session, msg string) *adler.Session {
+	t.Helper()
+	select {
+	case s := <-ch:
+		return s
+	case <-time.After(2 * time.Second):
+		t.Fatal(msg)
+		return nil
+	}
+}
+
+func readServerMessage(conn net.Conn, timeout time.Duration) (ws.OpCode, []byte, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, nil, err
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	payload, op, err := wsutil.ReadServerData(conn)
 	if err != nil {
-		tb.Fatalf("dial websocket: %v", err)
+		return 0, nil, err
 	}
 
-	tb.Cleanup(func() {
-		_ = conn.Close()
-	})
+	return op, payload, nil
+}
 
+func requireServerMessage(t *testing.T, conn net.Conn, timeout time.Duration, wantOp ws.OpCode, wantPayload []byte) {
+	t.Helper()
+
+	op, payload, err := readServerMessage(conn, timeout)
+	if err != nil {
+		t.Fatalf("read server message: %v", err)
+	}
+
+	if op != wantOp {
+		t.Fatalf("unexpected opcode: got=%v want=%v", op, wantOp)
+	}
+
+	if string(payload) != string(wantPayload) {
+		t.Fatalf("unexpected payload: got=%q want=%q", payload, wantPayload)
+	}
+}
+
+func requireNoServerMessage(t *testing.T, conn net.Conn, timeout time.Duration) {
+	t.Helper()
+
+	_, _, err := readServerMessage(conn, timeout)
+	if err == nil {
+		t.Fatal("expected no message, but received one")
+	}
+
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return
+	}
+
+	t.Fatalf("expected timeout while waiting for no message, got: %v", err)
+}
+
+func mustDialWS(t *testing.T, url string) net.Conn {
+	t.Helper()
+	conn, _, _, err := ws.Dial(context.Background(), url)
+	if err != nil {
+		t.Fatalf("dial ws: %v", err)
+	}
 	return conn
 }
 
-func waitForSignal(tb testing.TB, signal <-chan struct{}, name string) {
-	tb.Helper()
+func setupSingleSession(t *testing.T, a *adler.Adler) (net.Conn, *adler.Session) {
+	t.Helper()
 
-	select {
-	case <-signal:
-	case <-time.After(2 * time.Second):
-		tb.Fatalf("timeout waiting for %s", name)
-	}
+	sessions := make(chan *adler.Session, 1)
+	a.HandleConnect(func(s *adler.Session) {
+		sessions <- s
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	conn := mustDialWS(t, wsURL(srv.URL))
+	t.Cleanup(func() { _ = conn.Close() })
+
+	return conn, waitSession(t, sessions, "session not captured")
 }
 
-func readServerFrame(tb testing.TB, conn net.Conn) ([]byte, ws.OpCode) {
-	tb.Helper()
-
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		tb.Fatalf("set read deadline: %v", err)
+func hasString(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
 	}
-
-	payload, op, err := wsutil.ReadServerData(conn)
-	if err != nil {
-		tb.Fatalf("read server frame: %v", err)
-	}
-
-	return payload, op
+	return false
 }
 
-func readServerFrameNoDeadline(tb testing.TB, conn net.Conn) ([]byte, ws.OpCode) {
-	tb.Helper()
-
-	payload, op, err := wsutil.ReadServerData(conn)
-	if err != nil {
-		tb.Fatalf("read server frame: %v", err)
+func hasAny(vals []any, want any) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
 	}
-
-	return payload, op
+	return false
 }
 
-func isExpectedDisconnectError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if errors.Is(err, net.ErrClosed) {
-		return true
-	}
-
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "eof") ||
-		strings.Contains(message, "closed network connection") ||
-		strings.Contains(message, "connection reset by peer") ||
-		strings.Contains(message, "forcibly closed")
-}
-
-func TestHandleRequest_TextRequestFlow(t *testing.T) {
-	t.Parallel()
-
-	a := newTestAdler(t)
+func TestHandleRequest(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
 
 	connected := make(chan struct{}, 1)
 	disconnected := make(chan struct{}, 1)
-	unexpectedErr := make(chan error, 1)
+	receivedText := make(chan []byte, 1)
 
-	a.HandleConnect(func(*Session) {
+	a.HandleConnect(func(s *adler.Session) {
 		connected <- struct{}{}
 	})
 
-	a.HandleDisconnect(func(*Session) {
+	a.HandleDisconnect(func(s *adler.Session) {
 		disconnected <- struct{}{}
 	})
 
-	a.HandleError(func(_ *Session, err error) {
-		if isExpectedDisconnectError(err) {
-			return
-		}
-
-		select {
-		case unexpectedErr <- err:
-		default:
-		}
+	a.HandleMessage(func(s *adler.Session, msg []byte) {
+		cp := append([]byte(nil), msg...)
+		receivedText <- cp
 	})
 
-	a.HandleMessage(func(s *Session, payload []byte) {
-		var req struct {
-			Action string `json:"action"`
-			Name   string `json:"name"`
-		}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	},
+	))
 
-		if err := json.Unmarshal(payload, &req); err != nil {
-			_ = s.WriteJSON(map[string]string{
-				"type":   "error",
-				"reason": "invalid_json",
-			})
-			return
-		}
+	defer srv.Close()
 
-		switch req.Action {
-		case "hello":
-			_ = s.WriteJSON(map[string]string{
-				"type": "hello_ack",
-				"name": req.Name,
-			})
-		default:
-			_ = s.WriteJSON(map[string]string{
-				"type":   "error",
-				"reason": "unknown_action",
-			})
-		}
-	})
+	conn, _, _, err := ws.Dial(context.Background(), wsURL(srv.URL))
+	if err != nil {
+		t.Fatalf("dial ws: %v", err)
+	}
 
-	wsURL := startWebSocketServer(t, a)
-	conn := dialWebSocketClient(t, wsURL)
+	defer conn.Close()
 
-	waitForSignal(t, connected, "connect handler")
+	waitSignal(t, connected, "connect handler not called")
 
-	if err := wsutil.WriteClientText(conn, []byte(`{"action":"hello","name":"ana"}`)); err != nil {
+	want := []byte("hello")
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, want); err != nil {
 		t.Fatalf("write client text: %v", err)
 	}
 
-	payload, op := readServerFrame(t, conn)
-	if op != ws.OpText {
-		t.Fatalf("unexpected websocket opcode: got %v want %v", op, ws.OpText)
+	got := waitBytes(t, receivedText, "message handler not called")
+	if string(got) != string(want) {
+		t.Fatalf("unexpected message: got=%q want=%q", got, want)
 	}
 
-	var response map[string]string
-	if err := json.Unmarshal(payload, &response); err != nil {
-		t.Fatalf("decode json response: %v", err)
+	_ = conn.Close()
+	waitSignal(t, disconnected, "disconnect handler not called")
+}
+
+func TestRoomBroadcast(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
+	room := a.NewRoom("lobby")
+	sessions := make(chan *adler.Session, 3)
+
+	a.HandleConnect(func(s *adler.Session) {
+		clientID := s.Request.URL.Query().Get("cid")
+		s.Set("cid", clientID)
+		s.SetIdentity(clientID)
+		if err := room.Join(s); err != nil {
+			t.Errorf("join room: %v", err)
+			return
+		}
+		sessions <- s
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
+
+	conns := map[string]net.Conn{}
+	for _, cid := range []string{"1", "2", "3"} {
+		conn, _, _, err := ws.Dial(context.Background(), wsURL(srv.URL)+"?cid="+cid)
+		if err != nil {
+			t.Fatalf("dial ws cid=%s: %v", cid, err)
+		}
+		conns[cid] = conn
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+
+	captured := make([]*adler.Session, 0, 3)
+	for range 3 {
+		captured = append(captured, waitSession(t, sessions, "session connect not captured"))
 	}
 
-	if response["type"] != "hello_ack" {
-		t.Fatalf("unexpected response type: got %q", response["type"])
+	if got := room.Len(); got != 3 {
+		t.Fatalf("unexpected room size: got=%d want=3", got)
 	}
 
-	if response["name"] != "ana" {
-		t.Fatalf("unexpected response name: got %q want %q", response["name"], "ana")
+	roomMsg := []byte("room-broadcast")
+	room.Broadcast(roomMsg)
+	for _, cid := range []string{"1", "2", "3"} {
+		requireServerMessage(t, conns[cid], time.Second, ws.OpText, roomMsg)
 	}
 
-	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("close websocket client: %v", err)
+	var target *adler.Session
+	for _, s := range captured {
+		cid, ok := s.GetString("cid")
+		if ok && cid == "2" {
+			target = s
+			break
+		}
 	}
 
-	waitForSignal(t, disconnected, "disconnect handler")
+	if target == nil {
+		t.Fatal("target session for cid=2 not found")
+	}
 
-	select {
-	case err := <-unexpectedErr:
-		t.Fatalf("unexpected websocket error: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	privateMsg := []byte("private")
+	if err := a.SendTo(privateMsg, target); err != nil {
+		t.Fatalf("send to target: %v", err)
+	}
+
+	requireServerMessage(t, conns["2"], time.Second, ws.OpText, privateMsg)
+	requireNoServerMessage(t, conns["1"], 150*time.Millisecond)
+	requireNoServerMessage(t, conns["3"], 150*time.Millisecond)
+
+	othersMsg := []byte("others")
+	if err := a.BroadcastOthers(othersMsg, target); err != nil {
+		t.Fatalf("broadcast others: %v", err)
+	}
+
+	requireServerMessage(t, conns["1"], time.Second, ws.OpText, othersMsg)
+	requireServerMessage(t, conns["3"], time.Second, ws.OpText, othersMsg)
+	requireNoServerMessage(t, conns["2"], 150*time.Millisecond)
+
+	roomFilterMsg := []byte("room-filter")
+	room.BroadcastFilter(roomFilterMsg, func(s *adler.Session) bool {
+		cid, _ := s.GetString("cid")
+		return cid != "2"
+	})
+
+	requireServerMessage(t, conns["1"], time.Second, ws.OpText, roomFilterMsg)
+	requireServerMessage(t, conns["3"], time.Second, ws.OpText, roomFilterMsg)
+	requireNoServerMessage(t, conns["2"], 150*time.Millisecond)
+
+	room.Leave(target)
+	if got := room.Len(); got != 2 {
+		t.Fatalf("unexpected room size after leave: got=%d want=2", got)
 	}
 }
 
-func TestHandleRequest_BinaryRequestFlow(t *testing.T) {
-	t.Parallel()
+func TestSessionWrites(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
+	sessions := make(chan *adler.Session, 1)
 
-	a := newTestAdler(t)
-
-	connected := make(chan struct{}, 1)
-	disconnected := make(chan struct{}, 1)
-	seenBinary := make(chan []byte, 1)
-	unexpectedErr := make(chan error, 1)
-
-	a.HandleConnect(func(*Session) {
-		connected <- struct{}{}
+	a.HandleConnect(func(s *adler.Session) {
+		sessions <- s
 	})
 
-	a.HandleDisconnect(func(*Session) {
-		disconnected <- struct{}{}
-	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
 
-	a.HandleError(func(_ *Session, err error) {
-		if isExpectedDisconnectError(err) {
+	conn, _, _, err := ws.Dial(context.Background(), wsURL(srv.URL))
+	if err != nil {
+		t.Fatalf("dial ws: %v", err)
+	}
+	defer conn.Close()
+
+	s := waitSession(t, sessions, "session not captured")
+
+	text := []byte("text-direct")
+	if err := s.WriteText(text); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+	requireServerMessage(t, conn, time.Second, ws.OpText, text)
+
+	binary := []byte{1, 2, 3, 4}
+	if err := s.WriteBinary(binary); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	requireServerMessage(t, conn, time.Second, ws.OpBinary, binary)
+
+	jsonPayload := map[string]any{
+		"kind": "session-json",
+		"ok":   true,
+	}
+
+	if err := s.WriteJSON(jsonPayload); err != nil {
+		t.Fatalf("write json: %v", err)
+	}
+
+	op, payload, err := readServerMessage(conn, time.Second)
+	if err != nil {
+		t.Fatalf("read session json: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("unexpected opcode for session json: got=%v want=%v", op, ws.OpText)
+	}
+
+	decodedSession := map[string]any{}
+	if err := json.Unmarshal(payload, &decodedSession); err != nil {
+		t.Fatalf("unmarshal session json: %v", err)
+	}
+	if decodedSession["kind"] != "session-json" {
+		t.Fatalf("unexpected session json payload: %v", decodedSession)
+	}
+
+	broadcastJSON := map[string]any{"kind": "broadcast-json", "n": float64(7)}
+	if err := a.BroadcastJSON(broadcastJSON); err != nil {
+		t.Fatalf("broadcast json: %v", err)
+	}
+
+	op, payload, err = readServerMessage(conn, time.Second)
+	if err != nil {
+		t.Fatalf("read broadcast json: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("unexpected opcode for broadcast json: got=%v want=%v", op, ws.OpText)
+	}
+
+	decodedBroadcast := map[string]any{}
+	if err := json.Unmarshal(payload, &decodedBroadcast); err != nil {
+		t.Fatalf("unmarshal broadcast json: %v", err)
+	}
+	if decodedBroadcast["kind"] != "broadcast-json" {
+		t.Fatalf("unexpected broadcast json payload: %v", decodedBroadcast)
+	}
+}
+
+func TestSessionStore(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
+	conn, s := setupSingleSession(t, a)
+
+	if s.LocalAddr() == nil {
+		t.Fatal("local addr should not be nil")
+	}
+	if s.RemoteAddr() == nil {
+		t.Fatal("remote addr should not be nil")
+	}
+
+	if s.Identity() {
+		t.Fatal("identity should be false before SetIdentity")
+	}
+	s.SetIdentity("user-1")
+	if !s.Identity() {
+		t.Fatal("identity should be true after SetIdentity")
+	}
+
+	s.Set("name", "ana")
+	if !s.Has("name") {
+		t.Fatal("expected key name to exist")
+	}
+
+	v, err := s.Get("name")
+	if err != nil {
+		t.Fatalf("get existing key: %v", err)
+	}
+	if got, ok := v.(string); !ok || got != "ana" {
+		t.Fatalf("unexpected get value: %#v", v)
+	}
+
+	if _, err := s.Get("missing"); err != adler.ErrKeyNotFound {
+		t.Fatalf("expected ErrKeyNotFound, got: %v", err)
+	}
+
+	if !s.SetNX("once", 1) {
+		t.Fatal("SetNX should return true for a new key")
+	}
+	if s.SetNX("once", 2) {
+		t.Fatal("SetNX should return false when key already exists")
+	}
+	if iv, ok := s.GetInt("once"); !ok || iv != 1 {
+		t.Fatalf("unexpected SetNX stored value: got=%d ok=%v", iv, ok)
+	}
+
+	s.Set("i", 7)
+	s.Set("i64", int64(9))
+	s.Set("f64", 3.14)
+	s.Set("b", true)
+
+	if got, ok := s.GetString("name"); !ok || got != "ana" {
+		t.Fatalf("GetString failed: got=%q ok=%v", got, ok)
+	}
+	if got, ok := s.GetInt("i"); !ok || got != 7 {
+		t.Fatalf("GetInt failed: got=%d ok=%v", got, ok)
+	}
+	if got, ok := s.GetInt64("i64"); !ok || got != 9 {
+		t.Fatalf("GetInt64 failed: got=%d ok=%v", got, ok)
+	}
+	if got, ok := s.GetFloat("f64"); !ok || got != 3.14 {
+		t.Fatalf("GetFloat failed: got=%f ok=%v", got, ok)
+	}
+	if got, ok := s.GetBool("b"); !ok || !got {
+		t.Fatalf("GetBool failed: got=%v ok=%v", got, ok)
+	}
+
+	if _, ok := s.GetInt("name"); ok {
+		t.Fatal("GetInt should fail for non-int value")
+	}
+
+	counter := int64(10)
+	s.Set("counter", &counter)
+	if got, err := s.Incr("counter"); err != nil || got != 11 {
+		t.Fatalf("Incr failed: got=%d err=%v", got, err)
+	}
+	if got, err := s.Decr("counter"); err != nil || got != 10 {
+		t.Fatalf("Decr failed: got=%d err=%v", got, err)
+	}
+
+	if _, err := s.Incr("missing-counter"); err != adler.ErrKeyNotFound {
+		t.Fatalf("expected ErrKeyNotFound from Incr, got: %v", err)
+	}
+
+	s.Set("not-pointer", int64(5))
+	if _, err := s.Decr("not-pointer"); err != adler.ErrTypeAssertionFailed {
+		t.Fatalf("expected ErrTypeAssertionFailed from Decr, got: %v", err)
+	}
+
+	keys := s.Keys()
+	if len(keys) == 0 || !hasString(keys, "name") || !hasString(keys, "counter") {
+		t.Fatalf("unexpected keys snapshot: %v", keys)
+	}
+
+	values := s.Values()
+	if len(values) == 0 || !hasAny(values, "ana") || !hasAny(values, true) {
+		t.Fatalf("unexpected values snapshot: %v", values)
+	}
+
+	s.Unset("name")
+	if s.Has("name") {
+		t.Fatal("name should be removed after Unset")
+	}
+
+	s.Clear()
+	if len(s.Keys()) != 0 || len(s.Values()) != 0 {
+		t.Fatalf("expected empty store after Clear, got keys=%v values=%v", s.Keys(), s.Values())
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close conn: %v", err)
+	}
+}
+
+func TestRoomAndAdlerCallbacksAndRoomState(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
+	roomA := a.NewRoom("room-a")
+	roomAAgain := a.NewRoom("room-a")
+	if roomA != roomAAgain {
+		t.Fatal("NewRoom should return same room instance for same name")
+	}
+	if roomA.Name() != "room-a" {
+		t.Fatalf("unexpected room name: %s", roomA.Name())
+	}
+
+	if err := roomA.Join(nil); err != adler.ErrNilSession {
+		t.Fatalf("expected ErrNilSession, got: %v", err)
+	}
+
+	roomA.CloseRoom()
+	if err := roomA.Join(&adler.Session{}); err != adler.ErrRoomClosed {
+		t.Fatalf("expected ErrRoomClosed, got: %v", err)
+	}
+	roomA.OpenRoom()
+
+	sessions := make(chan *adler.Session, 2)
+	roomJoin := make(chan struct{}, 2)
+	roomLeave := make(chan struct{}, 2)
+	adlerJoin := make(chan struct{}, 2)
+	adlerLeave := make(chan struct{}, 2)
+
+	roomA.HandleJoin(func(*adler.Session) { roomJoin <- struct{}{} })
+	roomA.HandleLeave(func(*adler.Session) { roomLeave <- struct{}{} })
+	a.OnRoomJoin(func(*adler.Session, *adler.Room) { adlerJoin <- struct{}{} })
+	a.OnRoomLeave(func(*adler.Session, *adler.Room) { adlerLeave <- struct{}{} })
+
+	a.HandleConnect(func(s *adler.Session) {
+		if err := roomA.Join(s); err != nil {
+			t.Errorf("join roomA: %v", err)
 			return
 		}
-
-		select {
-		case unexpectedErr <- err:
-		default:
-		}
+		sessions <- s
 	})
 
-	a.HandleMessageBinary(func(s *Session, payload []byte) {
-		copyOfPayload := append([]byte(nil), payload...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
 
-		select {
-		case seenBinary <- copyOfPayload:
-		default:
-		}
+	c1 := mustDialWS(t, wsURL(srv.URL))
+	defer c1.Close()
+	c2 := mustDialWS(t, wsURL(srv.URL))
+	defer c2.Close()
 
-		_ = s.WriteBinary(copyOfPayload)
+	s1 := waitSession(t, sessions, "missing session 1")
+	_ = waitSession(t, sessions, "missing session 2")
+
+	waitSignal(t, roomJoin, "room join callback not called")
+	waitSignal(t, roomJoin, "room join callback not called second time")
+	waitSignal(t, adlerJoin, "adler on room join callback not called")
+	waitSignal(t, adlerJoin, "adler on room join callback not called second time")
+
+	if s1.Room() != roomA {
+		t.Fatal("session room should be roomA")
+	}
+
+	if got := roomA.Len(); got != 2 {
+		t.Fatalf("unexpected room len: got=%d want=2", got)
+	}
+	if len(roomA.Sessions()) != 2 {
+		t.Fatalf("unexpected Sessions snapshot len: %d", len(roomA.Sessions()))
+	}
+
+	roomA.Leave(s1)
+	waitSignal(t, roomLeave, "room leave callback not called")
+	waitSignal(t, adlerLeave, "adler on room leave callback not called")
+
+	if s1.Room() != nil {
+		t.Fatal("session room should be nil after leave")
+	}
+	if got := roomA.Len(); got != 1 {
+		t.Fatalf("unexpected room len after leave: got=%d want=1", got)
+	}
+}
+
+func TestAdlerBroadcastAndCloseState(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(true))
+	sessions := make(chan *adler.Session, 2)
+
+	a.HandleConnect(func(s *adler.Session) {
+		id := s.Request.URL.Query().Get("id")
+		s.Set("id", id)
+		sessions <- s
 	})
 
-	wsURL := startWebSocketServer(t, a)
-	conn := dialWebSocketClient(t, wsURL)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
 
-	waitForSignal(t, connected, "connect handler")
+	c1 := mustDialWS(t, wsURL(srv.URL)+"?id=1")
+	defer c1.Close()
+	c2 := mustDialWS(t, wsURL(srv.URL)+"?id=2")
+	defer c2.Close()
 
-	want := []byte{0x10, 0x20, 0x30}
-	if err := wsutil.WriteClientBinary(conn, want); err != nil {
+	s1 := waitSession(t, sessions, "missing session 1")
+	_ = waitSession(t, sessions, "missing session 2")
+
+	if got := a.Len(); got != 2 {
+		t.Fatalf("unexpected adler len: got=%d want=2", got)
+	}
+	if a.IsClosed() {
+		t.Fatal("adler should not be closed yet")
+	}
+
+	msg := []byte("broadcast-all")
+	if err := a.Broadcast(msg); err != nil {
+		t.Fatalf("Broadcast failed: %v", err)
+	}
+	requireServerMessage(t, c1, time.Second, ws.OpText, msg)
+	requireServerMessage(t, c2, time.Second, ws.OpText, msg)
+
+	msgFiltered := []byte("broadcast-filter")
+	if err := a.BroadcastFilter(msgFiltered, func(s *adler.Session) bool {
+		id, _ := s.GetString("id")
+		return id == "1"
+	}); err != nil {
+		t.Fatalf("BroadcastFilter failed: %v", err)
+	}
+	requireServerMessage(t, c1, time.Second, ws.OpText, msgFiltered)
+	requireNoServerMessage(t, c2, 150*time.Millisecond)
+
+	bin := []byte{9, 8, 7}
+	if err := a.BroadcastBinary(bin); err != nil {
+		t.Fatalf("BroadcastBinary failed: %v", err)
+	}
+	requireServerMessage(t, c1, time.Second, ws.OpBinary, bin)
+	requireServerMessage(t, c2, time.Second, ws.OpBinary, bin)
+
+	binFiltered := []byte{1, 3, 5}
+	if err := a.BroadcastBinaryFilter(binFiltered, func(s *adler.Session) bool {
+		id, _ := s.GetString("id")
+		return id == "2"
+	}); err != nil {
+		t.Fatalf("BroadcastBinaryFilter failed: %v", err)
+	}
+	requireNoServerMessage(t, c1, 150*time.Millisecond)
+	requireServerMessage(t, c2, time.Second, ws.OpBinary, binFiltered)
+
+	if err := a.BroadcastJSONFilter(map[string]any{"k": "json-filter"}, func(s *adler.Session) bool {
+		return s == s1
+	}); err != nil {
+		t.Fatalf("BroadcastJSONFilter failed: %v", err)
+	}
+	requireServerMessage(t, c1, time.Second, ws.OpText, []byte(`{"k":"json-filter"}`))
+	requireNoServerMessage(t, c2, 150*time.Millisecond)
+
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if !a.IsClosed() {
+		t.Fatal("adler should be closed after Close")
+	}
+
+	if err := a.Close(); err != adler.ErrCoreClosed {
+		t.Fatalf("expected ErrCoreClosed on second Close, got: %v", err)
+	}
+	if err := a.Broadcast([]byte("x")); err != adler.ErrCoreClosed {
+		t.Fatalf("expected ErrCoreClosed from Broadcast, got: %v", err)
+	}
+	if err := a.BroadcastBinary([]byte("x")); err != adler.ErrCoreClosed {
+		t.Fatalf("expected ErrCoreClosed from BroadcastBinary, got: %v", err)
+	}
+	if err := a.SendTo([]byte("x"), s1); err != adler.ErrCoreClosed {
+		t.Fatalf("expected ErrCoreClosed from SendTo, got: %v", err)
+	}
+	if err := a.BroadcastOthers([]byte("x"), s1); err != adler.ErrCoreClosed {
+		t.Fatalf("expected ErrCoreClosed from BroadcastOthers, got: %v", err)
+	}
+}
+
+func TestHandlersAndRoomBinaryJSONBroadcasts(t *testing.T) {
+	a := adler.New(adler.WithDispatchAsync(false))
+	room := a.NewRoom("room-handlers")
+	sessions := make(chan *adler.Session, 2)
+
+	binaryReceived := make(chan []byte, 1)
+	pongReceived := make(chan struct{}, 1)
+	sentText := make(chan []byte, 4)
+	sentBinary := make(chan []byte, 4)
+
+	a.HandleConnect(func(s *adler.Session) {
+		s.Set("id", s.Request.URL.Query().Get("id"))
+		if err := room.Join(s); err != nil {
+			t.Errorf("join room: %v", err)
+			return
+		}
+		sessions <- s
+	})
+
+	a.HandleMessageBinary(func(_ *adler.Session, msg []byte) {
+		cp := append([]byte(nil), msg...)
+		binaryReceived <- cp
+	})
+	a.HandlePong(func(*adler.Session) {
+		pongReceived <- struct{}{}
+	})
+	a.HandleSentMessage(func(_ *adler.Session, msg []byte) {
+		cp := append([]byte(nil), msg...)
+		sentText <- cp
+	})
+	a.HandleSentMessageBinary(func(_ *adler.Session, msg []byte) {
+		cp := append([]byte(nil), msg...)
+		sentBinary <- cp
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
+
+	c1 := mustDialWS(t, wsURL(srv.URL)+"?id=1")
+	defer c1.Close()
+	c2 := mustDialWS(t, wsURL(srv.URL)+"?id=2")
+	defer c2.Close()
+
+	_ = waitSession(t, sessions, "missing session 1")
+	_ = waitSession(t, sessions, "missing session 2")
+
+	clientBinary := []byte("from-client-binary")
+	if err := wsutil.WriteClientMessage(c1, ws.OpBinary, clientBinary); err != nil {
 		t.Fatalf("write client binary: %v", err)
 	}
 
-	select {
-	case got := <-seenBinary:
-		if !bytes.Equal(got, want) {
-			t.Fatalf("binary handler payload mismatch: got %v want %v", got, want)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for binary handler")
+	gotBinary := waitBytes(t, binaryReceived, "binary handler not called")
+	if string(gotBinary) != string(clientBinary) {
+		t.Fatalf("unexpected binary payload: got=%q want=%q", gotBinary, clientBinary)
 	}
 
-	payload, op := readServerFrame(t, conn)
-	if op != ws.OpBinary {
-		t.Fatalf("unexpected websocket opcode: got %v want %v", op, ws.OpBinary)
+	if err := wsutil.WriteClientMessage(c1, ws.OpPong, []byte("pong")); err != nil {
+		t.Fatalf("write pong: %v", err)
+	}
+	waitSignal(t, pongReceived, "pong handler not called")
+
+	roomBinary := []byte{4, 2}
+	room.BroadcastBinary(roomBinary)
+	requireServerMessage(t, c1, time.Second, ws.OpBinary, roomBinary)
+	requireServerMessage(t, c2, time.Second, ws.OpBinary, roomBinary)
+
+	if string(waitBytes(t, sentBinary, "sent binary callback not called")) != string(roomBinary) {
+		t.Fatal("unexpected sent binary payload")
 	}
 
-	if !bytes.Equal(payload, want) {
-		t.Fatalf("binary echo mismatch: got %v want %v", payload, want)
+	if err := room.BroadcastJSON(map[string]any{"kind": "room-json"}); err != nil {
+		t.Fatalf("room BroadcastJSON failed: %v", err)
+	}
+	requireServerMessage(t, c1, time.Second, ws.OpText, []byte(`{"kind":"room-json"}`))
+	requireServerMessage(t, c2, time.Second, ws.OpText, []byte(`{"kind":"room-json"}`))
+
+	if string(waitBytes(t, sentText, "sent text callback not called")) != `{"kind":"room-json"}` {
+		t.Fatal("unexpected sent text payload")
 	}
 
-	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("close websocket client: %v", err)
+	if err := room.BroadcastJSONFilter(map[string]any{"kind": "room-json-filter"}, func(s *adler.Session) bool {
+		id, _ := s.GetString("id")
+		return id == "1"
+	}); err != nil {
+		t.Fatalf("room BroadcastJSONFilter failed: %v", err)
 	}
-
-	waitForSignal(t, disconnected, "disconnect handler")
-
-	select {
-	case err := <-unexpectedErr:
-		t.Fatalf("unexpected websocket error: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
-func BenchmarkHandleRequest_TwoUsersChatFlow(b *testing.B) {
-	b.ReportAllocs()
-
-	a := newTestAdler(b)
-	a.Config.DispatchAsync = false
-
-	connected := make(chan struct{}, 2)
-	disconnected := make(chan struct{}, 2)
-	unexpectedErr := make(chan error, 64)
-
-	var usersMu sync.RWMutex
-	usersByName := make(map[string]*Session)
-	nameBySession := make(map[*Session]string)
-
-	joinAnaReq := []byte("join:ana")
-	joinMariaReq := []byte("join:maria")
-	joinAnaAck := []byte("join_ack:ana")
-	joinMariaAck := []byte("join_ack:maria")
-	chatAnaToMariaReq := []byte("chat:ana:maria:ping")
-	chatMariaToAnaReq := []byte("chat:maria:ana:pong")
-	chatAnaToMariaResp := []byte("chat:ana:ping")
-	chatMariaToAnaResp := []byte("chat:maria:pong")
-	recipientNotFound := []byte("error:recipient_not_found")
-	unknownReq := []byte("error:unknown_request")
-
-	a.HandleConnect(func(*Session) {
-		select {
-		case connected <- struct{}{}:
-		default:
-		}
-	})
-
-	a.HandleDisconnect(func(s *Session) {
-		usersMu.Lock()
-		if name, ok := nameBySession[s]; ok {
-			delete(nameBySession, s)
-			delete(usersByName, name)
-		}
-		usersMu.Unlock()
-
-		select {
-		case disconnected <- struct{}{}:
-		default:
-		}
-	})
-
-	a.HandleError(func(_ *Session, err error) {
-		if isExpectedDisconnectError(err) {
-			return
-		}
-
-		select {
-		case unexpectedErr <- err:
-		default:
-		}
-	})
-
-	a.HandleMessage(func(sender *Session, payload []byte) {
-		switch {
-		case bytes.Equal(payload, joinAnaReq):
-			usersMu.Lock()
-			usersByName["ana"] = sender
-			nameBySession[sender] = "ana"
-			usersMu.Unlock()
-			_ = sender.WriteText(joinAnaAck)
-		case bytes.Equal(payload, joinMariaReq):
-			usersMu.Lock()
-			usersByName["maria"] = sender
-			nameBySession[sender] = "maria"
-			usersMu.Unlock()
-			_ = sender.WriteText(joinMariaAck)
-		case bytes.Equal(payload, chatAnaToMariaReq):
-			usersMu.RLock()
-			recipient := usersByName["maria"]
-			usersMu.RUnlock()
-
-			if recipient == nil {
-				_ = sender.WriteText(recipientNotFound)
-				return
-			}
-			_ = recipient.WriteText(chatAnaToMariaResp)
-		case bytes.Equal(payload, chatMariaToAnaReq):
-			usersMu.RLock()
-			recipient := usersByName["ana"]
-			usersMu.RUnlock()
-
-			if recipient == nil {
-				_ = sender.WriteText(recipientNotFound)
-				return
-			}
-			_ = recipient.WriteText(chatMariaToAnaResp)
-		default:
-			_ = sender.WriteText(unknownReq)
-		}
-	})
-
-	wsURL := startWebSocketServer(b, a)
-	userOne := dialWebSocketClient(b, wsURL)
-	userTwo := dialWebSocketClient(b, wsURL)
-
-	waitForSignal(b, connected, "first user connect")
-	waitForSignal(b, connected, "second user connect")
-
-	if err := wsutil.WriteClientText(userOne, joinAnaReq); err != nil {
-		b.Fatalf("user one join: %v", err)
-	}
-
-	joinOnePayload, joinOneOp := readServerFrameNoDeadline(b, userOne)
-	if joinOneOp != ws.OpText {
-		b.Fatalf("unexpected join ack opcode for user one: got %v want %v", joinOneOp, ws.OpText)
-	}
-
-	if !bytes.Equal(joinOnePayload, joinAnaAck) {
-		b.Fatalf("unexpected join ack for user one: got %q want %q", joinOnePayload, joinAnaAck)
-	}
-
-	if err := wsutil.WriteClientText(userTwo, joinMariaReq); err != nil {
-		b.Fatalf("user two join: %v", err)
-	}
-
-	joinTwoPayload, joinTwoOp := readServerFrameNoDeadline(b, userTwo)
-	if joinTwoOp != ws.OpText {
-		b.Fatalf("unexpected join ack opcode for user two: got %v want %v", joinTwoOp, ws.OpText)
-	}
-
-	if !bytes.Equal(joinTwoPayload, joinMariaAck) {
-		b.Fatalf("unexpected join ack for user two: got %q want %q", joinTwoPayload, joinMariaAck)
-	}
-
-	if err := userOne.SetReadDeadline(time.Now().Add(10 * time.Minute)); err != nil {
-		b.Fatalf("set user one read deadline: %v", err)
-	}
-
-	if err := userTwo.SetReadDeadline(time.Now().Add(10 * time.Minute)); err != nil {
-		b.Fatalf("set user two read deadline: %v", err)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := wsutil.WriteClientText(userOne, chatAnaToMariaReq); err != nil {
-			b.Fatalf("write user one chat: %v", err)
-		}
-
-		msgForTwoPayload, msgForTwoOp := readServerFrameNoDeadline(b, userTwo)
-		if msgForTwoOp != ws.OpText {
-			b.Fatalf("unexpected opcode for user two message: got %v want %v", msgForTwoOp, ws.OpText)
-		}
-
-		if !bytes.Equal(msgForTwoPayload, chatAnaToMariaResp) {
-			b.Fatalf("unexpected payload for user two: got %q want %q", msgForTwoPayload, chatAnaToMariaResp)
-		}
-
-		if err := wsutil.WriteClientText(userTwo, chatMariaToAnaReq); err != nil {
-			b.Fatalf("write user two chat: %v", err)
-		}
-
-		msgForOnePayload, msgForOneOp := readServerFrameNoDeadline(b, userOne)
-		if msgForOneOp != ws.OpText {
-			b.Fatalf("unexpected opcode for user one message: got %v want %v", msgForOneOp, ws.OpText)
-		}
-
-		if !bytes.Equal(msgForOnePayload, chatMariaToAnaResp) {
-			b.Fatalf("unexpected payload for user one: got %q want %q", msgForOnePayload, chatMariaToAnaResp)
-		}
-	}
-	b.StopTimer()
-
-	if err := userOne.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		b.Fatalf("close user one connection: %v", err)
-	}
-
-	if err := userTwo.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		b.Fatalf("close user two connection: %v", err)
-	}
-
-	waitForSignal(b, disconnected, "first user disconnect")
-	waitForSignal(b, disconnected, "second user disconnect")
-
-	select {
-	case err := <-unexpectedErr:
-		b.Fatalf("unexpected websocket error: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
-func TestHandleRequest_ReturnsErrHubClosed(t *testing.T) {
-	t.Parallel()
-
-	a := newTestAdler(t)
-	a.core.closed.Store(true)
-
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	res := httptest.NewRecorder()
-
-	err := a.HandleRequest(res, req)
-	if !errors.Is(err, ErrCoreClosed) {
-		t.Fatalf("unexpected error: got %v want %v", err, ErrCoreClosed)
-	}
-}
-
-// BenchmarkLargePayload_Adler
-func BenchmarkLargePayload_Adler(b *testing.B) {
-	b.ReportAllocs()
-
-	payload := make([]byte, 64*1024) // 64 kB
-	for i := range payload {
-		payload[i] = byte(i % 256)
-	}
-
-	a := newTestAdler(b)
-	a.Config.DispatchAsync = false
-
-	received := make(chan struct{}, 1)
-
-	a.HandleMessage(func(s *Session, msg []byte) {
-		_ = s.WriteText(msg)
-	})
-
-	a.HandleConnect(func(*Session) { received <- struct{}{} })
-
-	wsURL := startWebSocketServer(b, a)
-	conn := dialWebSocketClient(b, wsURL)
-	waitForSignal(b, received, "connect")
-
-	reader := wsutil.NewReader(conn, ws.StateClientSide)
-
-	b.SetBytes(int64(len(payload)))
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := wsutil.WriteClientText(conn, payload); err != nil {
-			b.Fatal(err)
-		}
-
-		hdr, err := reader.NextFrame()
-		if err != nil {
-			b.Fatal(err)
-		}
-		if _, err := io.Copy(io.Discard, reader); err != nil {
-			b.Fatal(err)
-		}
-		_ = hdr
-	}
-
-	b.StopTimer()
+	requireServerMessage(t, c1, time.Second, ws.OpText, []byte(`{"kind":"room-json-filter"}`))
+	requireNoServerMessage(t, c2, 150*time.Millisecond)
 }
