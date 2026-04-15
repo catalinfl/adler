@@ -81,11 +81,15 @@ func (s *Session) writeFrame(message message) error {
 		return err
 	}
 
-	if s.adler.handlers.messageSentHandler != nil {
-		s.adler.handlers.messageSentHandler(s, message.content)
-	}
-	if s.adler.handlers.messageSentHandlerBinary != nil {
-		s.adler.handlers.messageSentHandlerBinary(s, message.content)
+	switch message.messageType {
+	case ws.OpText:
+		if s.adler.handlers.messageSentHandler != nil {
+			s.adler.handlers.messageSentHandler(s, message.content)
+		}
+	case ws.OpBinary:
+		if s.adler.handlers.messageSentHandlerBinary != nil {
+			s.adler.handlers.messageSentHandlerBinary(s, message.content)
+		}
 	}
 
 	return nil
@@ -331,30 +335,29 @@ func (s *Session) SetNX(key string, value any) bool {
 
 // Keys returns a snapshot of keys currently in the session store.
 func (s *Session) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	keys := make([]string, len(s.Store))
 	i := 0
 
-	s.mu.RLock()
 	for k := range s.Store {
 		keys[i] = k
 		i++
 	}
-	s.mu.RUnlock()
-
 	return keys
 }
 
 // Values returns a snapshot of values currently in the session store.
 func (s *Session) Values() []any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	values := make([]any, len(s.Store))
 	i := 0
 
-	s.mu.RLock()
 	for _, v := range s.Store {
 		values[i] = v
 		i++
 	}
-	s.mu.RUnlock()
 
 	return values
 }
