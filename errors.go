@@ -12,4 +12,5 @@ var (
 	ErrSessionClosed       = errors.New("session is closed")
 	ErrTypeAssertionFailed = errors.New("type assertion failed")
 	ErrRoomClosed          = errors.New("room is closed")
+	ErrCoreExit            = errors.New("cannot exit from core")
 )
