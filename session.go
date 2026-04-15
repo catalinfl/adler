@@ -14,14 +14,10 @@ import (
 
 // Session represents a single WebSocket client connection.
 type Session struct {
-	// Conn is the underlying websocket network connection.
-	Conn net.Conn
-	// Request is the original HTTP upgrade request.
-	Request *http.Request
-	// Protocol is the HTTP protocol string used during upgrade.
-	Protocol string
-	// Store is a per-session key-value store for user state.
-	Store      map[string]any
+	conn       net.Conn
+	request    *http.Request
+	protocol   string
+	store      map[string]any
 	output     chan message
 	outputDone chan struct{}
 	writeMu    sync.Mutex
@@ -68,15 +64,15 @@ func (s *Session) writeFrame(message message) error {
 	}
 
 	if writeWait > 0 {
-		if err := s.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		if err := s.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 			return err
 		}
 		defer func() {
-			_ = s.Conn.SetWriteDeadline(time.Time{})
+			_ = s.conn.SetWriteDeadline(time.Time{})
 		}()
 	}
 
-	err := wsutil.WriteServerMessage(s.Conn, message.messageType, message.content)
+	err := wsutil.WriteServerMessage(s.conn, message.messageType, message.content)
 	if err != nil {
 		return err
 	}
@@ -107,7 +103,7 @@ func (s *Session) writePump() {
 	defer ticker.Stop()
 
 	if cfg.PongWait > 0 {
-		s.Conn.SetReadDeadline(time.Now().Add(cfg.PongWait))
+		s.conn.SetReadDeadline(time.Now().Add(cfg.PongWait))
 	}
 
 loop:
@@ -146,7 +142,7 @@ func (s *Session) close() {
 	s.mu.Unlock()
 
 	if !closed {
-		s.Conn.Close()
+		s.conn.Close()
 		close(s.outputDone)
 	}
 }
@@ -204,7 +200,7 @@ func (s *Session) handleMessage(op ws.OpCode, message []byte) {
 
 // ping sends a websocket ping control frame.
 func (s *Session) ping() {
-	wsutil.WriteServerMessage(s.Conn, ws.OpPing, nil)
+	wsutil.WriteServerMessage(s.conn, ws.OpPing, nil)
 }
 
 // WriteText queues a text message to be sent to the client.
@@ -287,13 +283,16 @@ func (s *Session) Close(msg ...[]byte) error {
 func (s *Session) Set(key string, value any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Store[key] = value
+	if s.store == nil {
+		s.store = make(map[string]any)
+	}
+	s.store[key] = value
 }
 
 // Get returns the value stored under key or ErrKeyNotFound.
 func (s *Session) Get(key string) (any, error) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 	if !exists {
 		return nil, ErrKeyNotFound
@@ -306,7 +305,7 @@ func (s *Session) Get(key string) (any, error) {
 func (s *Session) Unset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.Store, key)
+	delete(s.store, key)
 }
 
 // Has reports whether key exists in the session store.
@@ -314,7 +313,7 @@ func (s *Session) Has(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	_, exists := s.Store[key]
+	_, exists := s.store[key]
 	return exists
 }
 
@@ -324,12 +323,16 @@ func (s *Session) SetNX(key string, value any) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, exists := s.Store[key]
+	if s.store == nil {
+		s.store = make(map[string]any)
+	}
+
+	_, exists := s.store[key]
 	if exists {
 		return false
 	}
 
-	s.Store[key] = value
+	s.store[key] = value
 	return true
 }
 
@@ -337,10 +340,10 @@ func (s *Session) SetNX(key string, value any) bool {
 func (s *Session) Keys() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	keys := make([]string, len(s.Store))
+	keys := make([]string, len(s.store))
 	i := 0
 
-	for k := range s.Store {
+	for k := range s.store {
 		keys[i] = k
 		i++
 	}
@@ -351,10 +354,10 @@ func (s *Session) Keys() []string {
 func (s *Session) Values() []any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	values := make([]any, len(s.Store))
+	values := make([]any, len(s.store))
 	i := 0
 
-	for _, v := range s.Store {
+	for _, v := range s.store {
 		values[i] = v
 		i++
 	}
@@ -365,7 +368,7 @@ func (s *Session) Values() []any {
 // GetString returns the string value for key and true on success.
 func (s *Session) GetString(key string) (string, bool) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -382,7 +385,7 @@ func (s *Session) GetString(key string) (string, bool) {
 // GetInt returns the int value for key and true on success.
 func (s *Session) GetInt(key string) (int, bool) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -399,7 +402,7 @@ func (s *Session) GetInt(key string) (int, bool) {
 // GetInt64 returns the int64 value for key and true on success.
 func (s *Session) GetInt64(key string) (int64, bool) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -414,7 +417,7 @@ func (s *Session) GetInt64(key string) (int64, bool) {
 // GetFloat returns the float64 value for key and true on success.
 func (s *Session) GetFloat(key string) (float64, bool) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -429,7 +432,7 @@ func (s *Session) GetFloat(key string) (float64, bool) {
 // GetBool returns the bool value for key and true on success.
 func (s *Session) GetBool(key string) (bool, bool) {
 	s.mu.RLock()
-	val, exists := s.Store[key]
+	val, exists := s.store[key]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -446,7 +449,7 @@ func (s *Session) Incr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ptr, exists := s.Store[key]
+	ptr, exists := s.store[key]
 	if !exists {
 		return 0, ErrKeyNotFound
 	}
@@ -464,7 +467,7 @@ func (s *Session) Decr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ptr, exists := s.Store[key]
+	ptr, exists := s.store[key]
 	if !exists {
 		return 0, ErrKeyNotFound
 	}
@@ -496,17 +499,17 @@ func (s *Session) Identity() bool {
 func (s *Session) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	clear(s.Store)
+	clear(s.store)
 }
 
 // LocalAddr returns the local network address of the websocket connection.
 func (s *Session) LocalAddr() net.Addr {
-	return s.Conn.LocalAddr()
+	return s.conn.LocalAddr()
 }
 
 // RemoteAddr returns the remote network address of the websocket connection.
 func (s *Session) RemoteAddr() net.Addr {
-	return s.Conn.RemoteAddr()
+	return s.conn.RemoteAddr()
 }
 
 // Room returns the room currently associated with the session.
@@ -514,4 +517,12 @@ func (s *Session) Room() *Room {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.room
+}
+
+func (s *Session) Request() *http.Request {
+	return s.request
+}
+
+func (s *Session) UnsafeConn() net.Conn {
+	return s.conn
 }
