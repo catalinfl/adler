@@ -43,7 +43,6 @@ type Adler struct {
 }
 
 // New initializes a ready-to-use Adler instance.
-//
 // Options override default configuration values in construction order.
 func (a *Adler) New(options ...Option) *Adler {
 	// no handler functions are initialized by default, all are nil
@@ -207,10 +206,14 @@ func (a *Adler) Close() error {
 		return ErrCoreClosed
 	}
 
-	a.core.exit(message{
+	err := a.core.exit(message{
 		messageType: ws.OpClose,
 		content:     []byte(""),
 	})
+
+	if err != nil {
+		return ErrCoreExit
+	}
 	return nil
 }
 
