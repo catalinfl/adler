@@ -198,7 +198,7 @@ func TestRoomBroadcast(t *testing.T) {
 	sessions := make(chan *adler.Session, 3)
 
 	a.HandleConnect(func(s *adler.Session) {
-		clientID := s.Request.URL.Query().Get("cid")
+		clientID := s.Request().URL.Query().Get("cid")
 		s.Set("cid", clientID)
 		s.SetIdentity(clientID)
 		if err := room.Join(s); err != nil {
@@ -569,7 +569,7 @@ func TestAdlerBroadcastAndCloseState(t *testing.T) {
 	sessions := make(chan *adler.Session, 2)
 
 	a.HandleConnect(func(s *adler.Session) {
-		id := s.Request.URL.Query().Get("id")
+		id := s.Request().URL.Query().Get("id")
 		s.Set("id", id)
 		sessions <- s
 	})
@@ -671,7 +671,7 @@ func TestHandlersAndRoomBinaryJSONBroadcasts(t *testing.T) {
 	sentBinary := make(chan []byte, 4)
 
 	a.HandleConnect(func(s *adler.Session) {
-		s.Set("id", s.Request.URL.Query().Get("id"))
+		s.Set("id", s.Request().URL.Query().Get("id"))
 		if err := room.Join(s); err != nil {
 			t.Errorf("join room: %v", err)
 			return
