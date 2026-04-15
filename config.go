@@ -18,7 +18,7 @@ type Config struct {
 	PingPeriod time.Duration
 	// MessageBufferSize is the per-session outbound queue capacity.
 	// When this value is 0, runtime falls back to a minimal queue.
-	MessageBufferSize uint16
+	MessageBufferSize int
 	// DispatchAsync controls inbound message dispatch mode.
 	// true dispatches each message on its own goroutine.
 	DispatchAsync bool
@@ -49,7 +49,7 @@ func WithPingPeriod(d time.Duration) Option {
 }
 
 // WithMessageBufferSize overrides Config.MessageBufferSize.
-func WithMessageBufferSize(size uint16) Option {
+func WithMessageBufferSize(size int) Option {
 	return func(c *Config) {
 		c.MessageBufferSize = size
 	}
