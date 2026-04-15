@@ -2,6 +2,7 @@ package adler
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -195,7 +196,25 @@ func (s *Session) handleMessage(op ws.OpCode, message []byte) {
 		if s.adler.handlers.pongHandler != nil {
 			s.adler.handlers.pongHandler(s)
 		}
+	case ws.OpClose:
+		if s.adler.handlers.closeHandler != nil {
+			code, reason := parseClosePayload(message)
+			s.adler.handlers.closeHandler(s, code, reason)
+		}
 	}
+}
+
+func parseClosePayload(payload []byte) (int, string) {
+	if len(payload) < 2 {
+		return 0, ""
+	}
+
+	code := int(binary.BigEndian.Uint16(payload[:2]))
+	if len(payload) == 2 {
+		return code, ""
+	}
+
+	return code, string(payload[2:])
 }
 
 // ping sends a websocket ping control frame.
@@ -483,6 +502,9 @@ func (s *Session) Decr(key string) (int64, error) {
 
 // SetIdentity sets a non-empty identity marker for the session.
 func (s *Session) SetIdentity(id string) {
+	if id == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.identity = id
@@ -519,10 +541,18 @@ func (s *Session) Room() *Room {
 	return s.room
 }
 
+// Request returns the original HTTP request used for websocket upgrade.
 func (s *Session) Request() *http.Request {
 	return s.request
 }
 
+// Protocol returns the HTTP protocol string from the upgrade request.
+func (s *Session) Protocol() string {
+	return s.protocol
+}
+
+// UnsafeConn exposes the underlying websocket network connection.
+// Callers must coordinate concurrent reads/writes to avoid races.
 func (s *Session) UnsafeConn() net.Conn {
 	return s.conn
 }
