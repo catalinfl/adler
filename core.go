@@ -14,6 +14,7 @@ type core struct {
 	sessionPool sync.Pool
 }
 
+// newCore allocates and initializes the core state and reusable buffers.
 func newCore() *core {
 	core := &core{
 		sessions: make(map[*Session]struct{}),
@@ -29,16 +30,19 @@ func newCore() *core {
 	return core
 }
 
+// isClosed reports whether the core is already closed.
 func (h *core) isClosed() bool {
 	return h.closed.Load()
 }
 
+// len returns the number of currently registered sessions.
 func (h *core) len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.sessions)
 }
 
+// register adds a session to the active session set.
 func (h *core) register(s *Session) error {
 	if s == nil {
 		return ErrNilSession
@@ -58,6 +62,7 @@ func (h *core) register(s *Session) error {
 	return nil
 }
 
+// unregister removes a session from the active session set.
 func (h *core) unregister(s *Session) error {
 	if s == nil {
 		return ErrNilSession
@@ -73,6 +78,7 @@ func (h *core) unregister(s *Session) error {
 	return nil
 }
 
+// exit sends a final message to all sessions and marks the core closed.
 func (h *core) exit(message message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -90,6 +96,7 @@ func (h *core) exit(message message) error {
 	return nil
 }
 
+// broadcast sends a message to every session matching the optional filter.
 func (h *core) broadcast(message message) {
 	h.mu.RLock()
 	sp := h.sessionPool.Get().(*[]*Session)
