@@ -171,7 +171,7 @@ func (a *Adler) BroadcastBinaryFilter(msg []byte, fn func(*Session) bool) error 
 }
 
 // BroadcastJSON marshals v and broadcasts it as a text websocket message.
-func (a *Adler) BroadcastJSON(v any) error {
+func (a *Adler) BroadcastJSON(v Map) error {
 	content, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -181,7 +181,7 @@ func (a *Adler) BroadcastJSON(v any) error {
 }
 
 // BroadcastJSONFilter marshals v and broadcasts it as text to sessions matching fn.
-func (a *Adler) BroadcastJSONFilter(v any, fn func(*Session) bool) error {
+func (a *Adler) BroadcastJSONFilter(v Map, fn func(*Session) bool) error {
 	content, err := json.Marshal(v)
 	if err != nil {
 		return err

@@ -236,7 +236,7 @@ func (s *Session) WriteTextWithDeadline(message []byte, deadline time.Duration) 
 }
 
 // WriteJSON marshals v to JSON and queues it as a text message.
-func (s *Session) WriteJSON(v any) error {
+func (s *Session) WriteJSON(v Map) error {
 	jsonContent, err := json.Marshal(v)
 	if err != nil {
 		return err

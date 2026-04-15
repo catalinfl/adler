@@ -14,6 +14,8 @@ type core struct {
 	sessionPool sync.Pool
 }
 
+type Map map[string]any
+
 // newCore allocates and initializes the core state and reusable buffers.
 func newCore() *core {
 	core := &core{

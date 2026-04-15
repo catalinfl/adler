@@ -193,12 +193,12 @@ func (r *Room) BroadcastFilter(msg []byte, filter func(*Session) bool) {
 }
 
 // BroadcastJSON marshals v and sends it as a text websocket message.
-func (r *Room) BroadcastJSON(v any) error {
+func (r *Room) BroadcastJSON(v Map) error {
 	return r.BroadcastJSONFilter(v, nil)
 }
 
 // BroadcastJSONFilter marshals v and sends it as text to sessions matching filter.
-func (r *Room) BroadcastJSONFilter(v any, filter func(*Session) bool) error {
+func (r *Room) BroadcastJSONFilter(v Map, filter func(*Session) bool) error {
 	content, err := json.Marshal(v)
 	if err != nil {
 		return err
