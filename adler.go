@@ -75,10 +75,10 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	session := &Session{
-		Store:      make(map[string]any),
-		Request:    r,
-		Protocol:   r.Proto,
-		Conn:       conn,
+		store:      make(map[string]any),
+		request:    r,
+		protocol:   r.Proto,
+		conn:       conn,
 		output:     make(chan message, outputBufferSize),
 		outputDone: make(chan struct{}),
 		mu:         sync.RWMutex{},
@@ -122,7 +122,11 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// connection must be unregistered forced after closing readPump
-	a.core.unregister(session)
+	err = a.core.unregister(session)
+	if err != nil {
+		return err
+	}
+
 	session.close()
 	if a.handlers.disconnectHandler != nil {
 		a.handlers.disconnectHandler(session)
