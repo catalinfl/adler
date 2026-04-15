@@ -12,7 +12,7 @@ import (
 
 type messageFunc func(*Session, []byte)
 type errorFunc func(*Session, error)
-type closeFunc func(*Session, int, string) error
+type closeFunc func(*Session, int, string)
 type sessionFunc func(*Session)
 type filterFunc func(*Session) bool
 type roomSessionFunc func(*Session, *Room)
@@ -89,8 +89,6 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	// must have a reader to reduce number of allocations per session
 	session.reader = wsutil.NewReader(conn, ws.StateServerSide)
 
-	// session.readBuf.Grow(64 * 1024)
-
 	if err := a.core.register(session); err != nil {
 		_ = conn.Close()
 		return err
@@ -122,10 +120,7 @@ func (a *Adler) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// connection must be unregistered forced after closing readPump
-	err = a.core.unregister(session)
-	if err != nil {
-		return err
-	}
+	a.core.unregister(session)
 
 	session.close()
 	if a.handlers.disconnectHandler != nil {
@@ -296,6 +291,10 @@ func (a *Adler) OnRoomLeave(fn func(*Session, *Room)) {
 // HandleConnect registers a callback triggered when a websocket session starts.
 func (a *Adler) HandleConnect(fn func(*Session)) {
 	a.handlers.connectHandler = fn
+}
+
+func (a *Adler) HandleClose(fn func(*Session, int, string)) {
+	a.handlers.closeHandler = fn
 }
 
 // HandleDisconnect registers a callback triggered when a websocket session ends.
