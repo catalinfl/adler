@@ -44,7 +44,7 @@ type Adler struct {
 
 // New initializes a ready-to-use Adler instance.
 // Options override default configuration values in construction order.
-func (a *Adler) New(options ...Option) *Adler {
+func New(options ...Option) *Adler {
 	// no handler functions are initialized by default, all are nil
 	handlers := handlers{}
 	cfg := newConfig(options...)
