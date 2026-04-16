@@ -135,9 +135,8 @@ Storage helpers:
 - `Clear()`
 - `Incr(key)` and `Decr(key)` for `*int64` counters
 
-Identity and metadata:
+Metadata:
 
-- `SetIdentity(id)` and `Identity()`
 - `Request()` returns the original HTTP request
 - `Protocol()` returns the HTTP protocol string used during upgrade
 - `LocalAddr()` and `RemoteAddr()` expose the connection addresses
@@ -224,10 +223,10 @@ a.HandleClose(func(s *adler.Session, code int, reason string) {
 
 Use these options with `adler.New(...)`:
 
-- `WithWriteWait(time.Duration)` sets the write deadline per outbound message
-- `WithPongWait(time.Duration)` sets the deadline used by the read loop
-- `WithPingPeriod(time.Duration)` controls server-side ping frequency
-- `WithMessageBufferSize(int)` sets the outbound queue size
+- `WithWriteWait(time.Duration)` interprets the argument as seconds; `WithWriteWait(10)` means 10 seconds
+- `WithPongWait(time.Duration)` interprets the argument as seconds; `WithPongWait(60)` means 60 seconds, and `WithPongWait(0)` disables idle disconnects
+- `WithPingPeriod(time.Duration)` interprets the argument as seconds; `WithPingPeriod(54)` means 54 seconds
+- `WithMessageBufferSize(int)` sets the outbound queue size; start with 64-256 and increase only if you hit `ErrBufferFull` under normal bursts
 - `WithDispatchAsync(bool)` switches inbound dispatch to goroutine-per-message when enabled
 
 ## Notes On Concurrency
