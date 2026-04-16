@@ -14,4 +14,5 @@ var (
 	ErrRoomClosed          = errors.New("room is closed")
 	ErrCoreExit            = errors.New("cannot exit from core")
 	ErrRoomNotFound        = errors.New("room not found")
+	ErrRoomNotEmpty        = errors.New("room is not empty")
 )
