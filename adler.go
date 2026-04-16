@@ -331,3 +331,12 @@ func (a *Adler) HandleSentMessageBinary(fn func(*Session, []byte)) {
 func (a *Adler) HandleError(fn func(*Session, error)) {
 	a.handlers.errorHandler = fn
 }
+
+// GetRoom returns the room identified by RoomName
+func (a *Adler) Room(roomName string) (*Room, error) {
+	room, ok := a.rooms[roomName]
+	if !ok {
+		return nil, ErrRoomNotFound
+	}
+	return room, nil
+}
