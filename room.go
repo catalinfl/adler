@@ -103,7 +103,6 @@ func (r *Room) Join(s *Session) error {
 		prevEmpty := len(prev.sessions) == 0
 		if prevEmpty {
 			prev.sessions = nil
-			prev.closed.Store(true)
 		}
 		prev.mu.Unlock()
 
@@ -149,7 +148,6 @@ func (r *Room) Leave(s *Session) {
 	empty := len(r.sessions) == 0
 	if empty {
 		r.sessions = nil
-		r.closed.Store(true)
 	}
 	r.mu.Unlock() // room mutex
 	s.mu.Unlock() // session mutex
