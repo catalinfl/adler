@@ -200,7 +200,6 @@ func TestRoomBroadcast(t *testing.T) {
 	a.HandleConnect(func(s *adler.Session) {
 		clientID := s.Request().URL.Query().Get("cid")
 		s.Set("cid", clientID)
-		s.SetIdentity(clientID)
 		if err := room.Join(s); err != nil {
 			t.Errorf("join room: %v", err)
 			return
@@ -378,14 +377,6 @@ func TestSessionStore(t *testing.T) {
 	}
 	if s.RemoteAddr() == nil {
 		t.Fatal("remote addr should not be nil")
-	}
-
-	if s.Identity() {
-		t.Fatal("identity should be false before SetIdentity")
-	}
-	s.SetIdentity("user-1")
-	if !s.Identity() {
-		t.Fatal("identity should be true after SetIdentity")
 	}
 
 	s.Set("name", "ana")
