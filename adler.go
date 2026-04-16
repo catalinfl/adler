@@ -235,6 +235,10 @@ func (a *Adler) NewRoom(name string) *Room {
 }
 
 func (a *Adler) removeRoomIfEmpty(r *Room) {
+	if !a.Config.DeleteRoomOnEmpty {
+		return
+	}
+
 	if r == nil || r.Len() != 0 {
 		return
 	}
@@ -252,8 +256,32 @@ func (a *Adler) removeRoomIfEmpty(r *Room) {
 	}
 
 	if r.Len() == 0 {
+		r.closed.Store(true)
 		delete(a.rooms, r.name)
 	}
+}
+
+// DeleteRoom removes a room by name when it has no active sessions.
+func (a *Adler) DeleteRoom(roomName string) error {
+	a.roomsMu.Lock()
+	defer a.roomsMu.Unlock()
+
+	room, ok := a.rooms[roomName]
+	if !ok {
+		return ErrRoomNotFound
+	}
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+
+	if len(room.sessions) != 0 {
+		return ErrRoomNotEmpty
+	}
+
+	room.closed.Store(true)
+	room.sessions = nil
+	delete(a.rooms, roomName)
+	return nil
 }
 
 // BroadcastOthers sends msg to all connected sessions except s.
@@ -334,6 +362,8 @@ func (a *Adler) HandleError(fn func(*Session, error)) {
 
 // GetRoom returns the room identified by RoomName
 func (a *Adler) Room(roomName string) (*Room, error) {
+	a.roomsMu.RLock()
+	defer a.roomsMu.RUnlock()
 	room, ok := a.rooms[roomName]
 	if !ok {
 		return nil, ErrRoomNotFound
