@@ -13,4 +13,5 @@ var (
 	ErrTypeAssertionFailed = errors.New("type assertion failed")
 	ErrRoomClosed          = errors.New("room is closed")
 	ErrCoreExit            = errors.New("cannot exit from core")
+	ErrRoomNotFound        = errors.New("room not found")
 )
