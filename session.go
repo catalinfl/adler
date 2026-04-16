@@ -500,23 +500,6 @@ func (s *Session) Decr(key string) (int64, error) {
 	return *p, nil
 }
 
-// SetIdentity sets a non-empty identity marker for the session.
-func (s *Session) SetIdentity(id string) {
-	if id == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.identity = id
-}
-
-// Identity reports whether the session currently has an identity set.
-func (s *Session) Identity() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.identity != ""
-}
-
 // Clear removes all key-value pairs from the session store.
 func (s *Session) Clear() {
 	s.mu.Lock()
