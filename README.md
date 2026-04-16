@@ -200,6 +200,7 @@ room.Broadcast([]byte("welcome to the lobby"))
 Room helpers:
 
 - `NewRoom(name)` returns an existing room or creates one
+- `DeleteRoom(name)` removes a room manually when it is empty
 - `Name()` returns the room name
 - `Len()` returns the number of members
 - `Sessions()` returns a snapshot of current members
@@ -228,6 +229,7 @@ Use these options with `adler.New(...)`:
 - `WithPingPeriod(time.Duration)` interprets the argument as seconds; `WithPingPeriod(54)` means 54 seconds
 - `WithMessageBufferSize(int)` sets the outbound queue size; start with 64-256 and increase only if you hit `ErrBufferFull` under normal bursts
 - `WithDispatchAsync(bool)` switches inbound dispatch to goroutine-per-message when enabled
+- `WithDeleteRoomOnEmpty(bool)` controls automatic room deletion when the last session leaves (default: `true`)
 
 ## Notes On Concurrency
 
