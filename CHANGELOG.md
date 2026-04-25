@@ -2,6 +2,11 @@
 
 All notable changes for this project are documented here.
 
+## Roadmap
+
+- [ ] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
+- [ ] Implement matchmaking based on ELO ranking, including configurable ranking buckets and match quality rules.
+
 ## 1.1.0
 
 ### Added
