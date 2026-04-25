@@ -12,6 +12,11 @@ Adler is a lightweight WebSocket server toolkit for Go. It gives you a small, fo
 - Per-session key-value storage
 - Optional access to the underlying request, protocol, and connection
 
+## Roadmap
+
+- [ ] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
+- [ ] Add ELO-based matchmaking with configurable rating buckets and match quality rules.
+
 ## Installation
 
 ```bash
