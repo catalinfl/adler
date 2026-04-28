@@ -3,7 +3,6 @@ package matchmaking
 import (
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/catalinfl/adler"
 )
@@ -51,6 +50,8 @@ func NewMatchmaker(a *adler.Adler, opts ...MatchmakingOption) *Matchmaker {
 }
 
 func (m *Matchmaker) AddToQueue(s *adler.Session) {
+	var notifications []func()
+
 	m.mu.Lock()
 
 	if _, exists := m.inQueueMap[s]; exists {
@@ -76,37 +77,45 @@ func (m *Matchmaker) AddToQueue(s *adler.Session) {
 		m.inWaitQueueMap[s] = struct{}{}
 		s.Set("queue_status", "waiting")
 	} else {
-		m.addToMainQueue(s)
-		m.processQueueTransitions()
+		notifications = append(notifications, m.addToMainQueue(s))
+		notifications = append(notifications, m.processQueueTransitions()...)
 	}
 
 	m.mu.Unlock()
+
+	for _, n := range notifications {
+		n()
+	}
 }
 
-func (m *Matchmaker) addToMainQueue(s *adler.Session) {
+func (m *Matchmaker) addToMainQueue(s *adler.Session) func() {
 	m.queue = append(m.queue, s)
 	m.inQueueMap[s] = struct{}{}
+
 	delete(m.inWaitQueueMap, s)
 	s.Set("queue_status", "queued")
 
-	position := len(m.queue)
-	totalNeeded := m.roomSize
-
-	s.WriteJSON(adler.Map{
-		"type":     "queue_joined",
-		"message":  "You have joined the main queue",
-		"position": position,
-		"needed":   totalNeeded,
-	})
+	return func() {
+		s.WriteJSON(adler.Map{
+			"type":    "queue_joined",
+			"message": "You have joined the main queue",
+		})
+	}
 }
 
-func (m *Matchmaker) processQueueTransitions() {
-	m.tryCreateRoom()
-	m.promoteFromWaitingQueue()
-	m.tryCreateRoom()
+func (m *Matchmaker) processQueueTransitions() []func() {
+	var notifications []func()
+
+	notifications = append(notifications, m.tryCreateRoom()...)
+	notifications = append(notifications, m.promoteFromWaitingQueue()...)
+	notifications = append(notifications, m.tryCreateRoom()...)
+
+	return notifications
 }
 
-func (m *Matchmaker) tryCreateRoom() {
+func (m *Matchmaker) tryCreateRoom() []func() {
+	var notifications []func()
+
 	for len(m.queue) >= m.roomSize {
 		players := make([]*adler.Session, m.roomSize)
 		copy(players, m.queue[:m.roomSize])
@@ -126,48 +135,58 @@ func (m *Matchmaker) tryCreateRoom() {
 			playerIDs = append(playerIDs, player.RemoteAddr().String())
 		}
 
-		m.mu.Unlock()
-
-		room.BroadcastJSON(adler.Map{
-			"type":      "match_found",
-			"room_id":   roomID,
-			"players":   playerIDs,
-			"timestamp": time.Now().Unix(),
+		notifications = append(notifications, func() {
+			room.BroadcastJSON(adler.Map{
+				"type":    "match_found",
+				"room_id": roomID,
+			})
 		})
 	}
+
+	return notifications
 }
 
-func (m *Matchmaker) promoteFromWaitingQueue() {
+func (m *Matchmaker) promoteFromWaitingQueue() []func() {
+	var notifications []func()
+
 	for len(m.waitQueue) > 0 && (m.maxQueue == 0 || len(m.queue) < m.maxQueue) {
 		next := m.waitQueue[0]
+		captured := next
 		m.waitQueue = m.waitQueue[1:]
 		delete(m.inWaitQueueMap, next)
 		m.queue = append(m.queue, next)
 		m.inQueueMap[next] = struct{}{}
 		next.Set("queue_status", "queued")
 
-		next.WriteJSON(adler.Map{
-			"type":    "promoted_to_queue",
-			"message": "A spot opened up. You are now in the main queue",
+		notifications = append(notifications, func() {
+			captured.WriteJSON(adler.Map{
+				"type":    "promoted_to_queue",
+				"message": "A spot opened up. You are now in the main queue",
+			})
 		})
 	}
+
+	return notifications
 }
 
 func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
+	var notifications []func()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.removeFromSlice(&m.queue, m.inQueueMap, s) {
 		delete(m.inQueueMap, s)
 		s.Set("queue_status", "left")
-		m.processQueueTransitions()
-		return
-	}
-
-	if m.removeFromSlice(&m.waitQueue, m.inWaitQueueMap, s) {
+		notifications = append(notifications, m.processQueueTransitions()...)
+	} else if m.removeFromSlice(&m.waitQueue, m.inWaitQueueMap, s) {
 		delete(m.inWaitQueueMap, s)
 		s.Set("queue_status", "left")
-		return
+	}
+
+	m.mu.Unlock()
+
+	for _, n := range notifications {
+		n()
 	}
 }
 
