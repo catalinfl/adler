@@ -52,6 +52,11 @@ func NewMatchmaker(a *adler.Adler, opts ...MatchmakingOption) *Matchmaker {
 func (m *Matchmaker) AddToQueue(s *adler.Session) {
 	var notifications []func()
 
+	queueStatus, ok := s.GetString("queue_status")
+	if !ok || queueStatus == "playing" {
+		return
+	}
+
 	m.mu.Lock()
 
 	if _, exists := m.inQueueMap[s]; exists {
@@ -125,14 +130,11 @@ func (m *Matchmaker) tryCreateRoom() []func() {
 		m.nextID++
 		room := m.adler.NewRoom(roomID)
 
-		playerIDs := make([]string, 0, len(players))
-
 		for _, player := range players {
 			delete(m.inQueueMap, player)
 			room.Join(player)
 			player.Set("queue_status", "playing")
 			player.Set("room_id", roomID)
-			playerIDs = append(playerIDs, player.RemoteAddr().String())
 		}
 
 		notifications = append(notifications, func() {
@@ -151,7 +153,7 @@ func (m *Matchmaker) promoteFromWaitingQueue() []func() {
 
 	for len(m.waitQueue) > 0 && (m.maxQueue == 0 || len(m.queue) < m.maxQueue) {
 		next := m.waitQueue[0]
-		captured := next
+		m.waitQueue[0] = nil
 		m.waitQueue = m.waitQueue[1:]
 		delete(m.inWaitQueueMap, next)
 		m.queue = append(m.queue, next)
@@ -159,7 +161,7 @@ func (m *Matchmaker) promoteFromWaitingQueue() []func() {
 		next.Set("queue_status", "queued")
 
 		notifications = append(notifications, func() {
-			captured.WriteJSON(adler.Map{
+			next.WriteJSON(adler.Map{
 				"type":    "promoted_to_queue",
 				"message": "A spot opened up. You are now in the main queue",
 			})
@@ -194,10 +196,10 @@ func (m *Matchmaker) removeFromSlice(slice *[]*adler.Session, mapSession map[*ad
 	for i, session := range *slice {
 		if session == s {
 			*slice = append((*slice)[:i], (*slice)[i+1:]...)
+			delete(mapSession, s)
 			return true
 		}
 	}
-	delete(mapSession, s)
 	return false
 }
 
@@ -213,6 +215,10 @@ func newMatchmakingConfig(opts ...MatchmakingOption) *MatchmakingConfig {
 		}
 
 		opt(cfg)
+	}
+
+	if cfg.RoomSize > cfg.MaxQueue {
+		panic("room size is bigger than max queue")
 	}
 
 	return cfg
