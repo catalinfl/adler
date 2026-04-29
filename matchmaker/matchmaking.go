@@ -1,10 +1,20 @@
 package matchmaking
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/catalinfl/adler"
+	"github.com/google/uuid"
+)
+
+const (
+	sessionKeyQueueStatus = "__matchmaking_queue_status"
+	sessionKeyRoomID      = "__matchmaking_room_id"
+
+	queueStatusLeft    = "left"
+	queueStatusQueued  = "queued"
+	queueStatusWaiting = "waiting"
+	queueStatusPlaying = "playing"
 )
 
 type Matchmaker struct {
@@ -16,7 +26,6 @@ type Matchmaker struct {
 	adler          *adler.Adler
 	maxQueue       int
 	roomSize       int // Number of players per room
-	nextID         int // Name of rooms
 }
 
 type MatchmakingConfig struct {
@@ -45,15 +54,14 @@ func NewMatchmaker(a *adler.Adler, opts ...MatchmakingOption) *Matchmaker {
 		adler:          a,
 		maxQueue:       cfg.MaxQueue,
 		roomSize:       cfg.RoomSize,
-		nextID:         1,
 	}
 }
 
 func (m *Matchmaker) AddToQueue(s *adler.Session) {
 	var notifications []func()
 
-	queueStatus, ok := s.GetString("queue_status")
-	if !ok || queueStatus == "playing" {
+	queueStatus, ok := s.GetString(sessionKeyQueueStatus)
+	if ok && queueStatus == queueStatusPlaying {
 		return
 	}
 
@@ -80,7 +88,8 @@ func (m *Matchmaker) AddToQueue(s *adler.Session) {
 	if m.maxQueue > 0 && len(m.queue) >= m.maxQueue {
 		m.waitQueue = append(m.waitQueue, s)
 		m.inWaitQueueMap[s] = struct{}{}
-		s.Set("queue_status", "waiting")
+		s.Set(sessionKeyQueueStatus, queueStatusWaiting)
+		notifications = append(notifications, m.processQueueTransitions()...)
 	} else {
 		notifications = append(notifications, m.addToMainQueue(s))
 		notifications = append(notifications, m.processQueueTransitions()...)
@@ -98,7 +107,7 @@ func (m *Matchmaker) addToMainQueue(s *adler.Session) func() {
 	m.inQueueMap[s] = struct{}{}
 
 	delete(m.inWaitQueueMap, s)
-	s.Set("queue_status", "queued")
+	s.Set(sessionKeyQueueStatus, queueStatusQueued)
 
 	return func() {
 		s.WriteJSON(adler.Map{
@@ -124,17 +133,18 @@ func (m *Matchmaker) tryCreateRoom() []func() {
 	for len(m.queue) >= m.roomSize {
 		players := make([]*adler.Session, m.roomSize)
 		copy(players, m.queue[:m.roomSize])
+		clear(m.queue[:m.roomSize])
 		m.queue = m.queue[m.roomSize:]
 
-		roomID := fmt.Sprintf("room_%d", m.nextID)
-		m.nextID++
+		id, _ := uuid.NewV7()
+		roomID := "room_" + id.String()
 		room := m.adler.NewRoom(roomID)
 
 		for _, player := range players {
 			delete(m.inQueueMap, player)
 			room.Join(player)
-			player.Set("queue_status", "playing")
-			player.Set("room_id", roomID)
+			player.Set(sessionKeyQueueStatus, queueStatusPlaying)
+			player.Set(sessionKeyRoomID, roomID)
 		}
 
 		notifications = append(notifications, func() {
@@ -158,7 +168,7 @@ func (m *Matchmaker) promoteFromWaitingQueue() []func() {
 		delete(m.inWaitQueueMap, next)
 		m.queue = append(m.queue, next)
 		m.inQueueMap[next] = struct{}{}
-		next.Set("queue_status", "queued")
+		next.Set(sessionKeyQueueStatus, queueStatusQueued)
 
 		notifications = append(notifications, func() {
 			next.WriteJSON(adler.Map{
@@ -177,12 +187,10 @@ func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
 	m.mu.Lock()
 
 	if m.removeFromSlice(&m.queue, m.inQueueMap, s) {
-		delete(m.inQueueMap, s)
-		s.Set("queue_status", "left")
+		s.Set(sessionKeyQueueStatus, queueStatusLeft)
 		notifications = append(notifications, m.processQueueTransitions()...)
 	} else if m.removeFromSlice(&m.waitQueue, m.inWaitQueueMap, s) {
-		delete(m.inWaitQueueMap, s)
-		s.Set("queue_status", "left")
+		s.Set(sessionKeyQueueStatus, queueStatusLeft)
 	}
 
 	m.mu.Unlock()
@@ -193,9 +201,12 @@ func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
 }
 
 func (m *Matchmaker) removeFromSlice(slice *[]*adler.Session, mapSession map[*adler.Session]struct{}, s *adler.Session) bool {
-	for i, session := range *slice {
+	items := *slice
+	for i, session := range items {
 		if session == s {
-			*slice = append((*slice)[:i], (*slice)[i+1:]...)
+			copy(items[i:], items[i+1:])
+			items[len(items)-1] = nil
+			*slice = items[:len(items)-1]
 			delete(mapSession, s)
 			return true
 		}
@@ -217,7 +228,7 @@ func newMatchmakingConfig(opts ...MatchmakingOption) *MatchmakingConfig {
 		opt(cfg)
 	}
 
-	if cfg.RoomSize > cfg.MaxQueue {
+	if cfg.MaxQueue > 0 && cfg.RoomSize > cfg.MaxQueue {
 		panic("room size is bigger than max queue")
 	}
 
