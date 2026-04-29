@@ -250,6 +250,21 @@ func TestClosureBugPromotedPlayers(t *testing.T) {
 		defer conn.Close()
 	}
 
+	// Consume initial queue notifications so we can assert only promotion events later.
+	for i := 0; i < 5; i++ {
+		evt := waitQueueEvent(t, conns[i])
+		if i < 2 {
+			if evt.Type != "queue_joined" {
+				t.Fatalf("player %d expected queue_joined, got %q", i+1, evt.Type)
+			}
+			continue
+		}
+
+		if evt.Type != "wait_queue_joined" {
+			t.Fatalf("player %d expected wait_queue_joined, got %q", i+1, evt.Type)
+		}
+	}
+
 	captured := make([]*adler.Session, 0, 5)
 	for i := 0; i < 5; i++ {
 		s := waitSession(t, sessions, fmt.Sprintf("missing session %d", i+1))
@@ -263,20 +278,18 @@ func TestClosureBugPromotedPlayers(t *testing.T) {
 	mm.RemoveFromQueue(captured[0])
 	time.Sleep(100 * time.Millisecond) // Give time for notifications
 
-	// Verific că p3 și p4 primesc promoted_to_queue
-	for i := 2; i < 4; i++ {
-		t.Logf("Waiting for promoted_to_queue on player %d (conns[%d])...", i+1, i)
-		op, payload := readServerMessage(t, conns[i], 500*time.Millisecond)
-		t.Logf("Player %d received: opcode=%v, payload=%s", i+1, op, string(payload))
+	// Removing one main-queue player opens exactly one slot, so only p3 is promoted.
+	t.Log("Waiting for promoted_to_queue on player 3 (conns[2])...")
+	op, payload := readServerMessage(t, conns[2], 500*time.Millisecond)
+	t.Logf("Player 3 received: opcode=%v, payload=%s", op, string(payload))
 
-		var evt queueEvent
-		if err := json.Unmarshal(payload, &evt); err != nil {
-			t.Fatalf("player %d unmarshal error: %v", i+1, err)
-		}
-		if evt.Type != "promoted_to_queue" {
-			t.Fatalf("player %d expected promoted_to_queue, got %q", i+1, evt.Type)
-		}
+	var evt queueEvent
+	if err := json.Unmarshal(payload, &evt); err != nil {
+		t.Fatalf("player 3 unmarshal error: %v", err)
+	}
+	if evt.Type != "promoted_to_queue" {
+		t.Fatalf("player 3 expected promoted_to_queue, got %q", evt.Type)
 	}
 
-	t.Log("✓ Closure FIXED: Promoted players received messages on correct connections!")
+	t.Log("Promotion flow works: waiting player receives promoted_to_queue on correct connection")
 }
