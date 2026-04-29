@@ -1,7 +1,9 @@
 package matchmaking
 
 import (
+	"container/list"
 	"sync"
+	"time"
 
 	"github.com/catalinfl/adler"
 	"github.com/google/uuid"
@@ -17,20 +19,44 @@ const (
 	queueStatusPlaying = "playing"
 )
 
+type matchmakingCommandKind int8
+
+const (
+	matchmakingCommandAdd matchmakingCommandKind = iota
+	matchmakingCommandRemove
+)
+
+type queueItem struct {
+	session    *adler.Session
+	enqueuedAt time.Time
+}
+
+type matchmakingCommand struct {
+	kind    matchmakingCommandKind
+	session *adler.Session
+	reply   chan []func()
+}
+
 type Matchmaker struct {
-	mu             sync.Mutex
-	waitQueue      []*adler.Session
-	inWaitQueueMap map[*adler.Session]struct{}
-	queue          []*adler.Session
-	inQueueMap     map[*adler.Session]struct{}
-	adler          *adler.Adler
-	maxQueue       int
-	roomSize       int // Number of players per room
+	commands           chan matchmakingCommand
+	mu                 sync.Mutex
+	waitQueue          *list.List
+	queue              *list.List
+	inWaitQueueMap     map[*adler.Session]*list.Element
+	inQueueMap         map[*adler.Session]*list.Element
+	adler              *adler.Adler
+	maxQueue           int
+	roomSize           int // Number of players per room
+	minRoomSize        int // Minimum number of players until the game should start
+	partialRoomTimeout time.Duration
 }
 
 type MatchmakingConfig struct {
-	MaxQueue int
-	RoomSize int
+	MaxQueue           int
+	RoomSize           int
+	MinRoomSize        int
+	PartialRoomTimeout time.Duration
+	CommandBuffer      int
 }
 
 type MatchmakingOption func(*MatchmakingConfig)
@@ -38,74 +64,140 @@ type MatchmakingOption func(*MatchmakingConfig)
 func NewMatchmaker(a *adler.Adler, opts ...MatchmakingOption) *Matchmaker {
 	cfg := newMatchmakingConfig(opts...)
 
-	if cfg.RoomSize < 2 {
-		cfg.RoomSize = 2
+	m := &Matchmaker{
+		commands:           make(chan matchmakingCommand, cfg.CommandBuffer),
+		waitQueue:          list.New(),
+		queue:              list.New(),
+		inWaitQueueMap:     map[*adler.Session]*list.Element{},
+		inQueueMap:         map[*adler.Session]*list.Element{},
+		adler:              a,
+		maxQueue:           cfg.MaxQueue,
+		roomSize:           cfg.RoomSize,
+		minRoomSize:        cfg.MinRoomSize,
+		partialRoomTimeout: cfg.PartialRoomTimeout,
 	}
 
-	if cfg.MaxQueue < 0 {
-		cfg.MaxQueue = 0 // Unlimited
+	go m.run()
+	return m
+}
+
+func (m *Matchmaker) run() {
+	var tick <-chan time.Time
+	var ticker *time.Ticker
+
+	if m.partialRoomTimeout > 0 {
+		ticker = time.NewTicker(matchmakingTickInterval(m.partialRoomTimeout))
+		tick = ticker.C
+		defer ticker.Stop()
 	}
 
-	return &Matchmaker{
-		waitQueue:      make([]*adler.Session, 0),
-		queue:          make([]*adler.Session, 0, cfg.MaxQueue),
-		inWaitQueueMap: map[*adler.Session]struct{}{},
-		inQueueMap:     map[*adler.Session]struct{}{},
-		adler:          a,
-		maxQueue:       cfg.MaxQueue,
-		roomSize:       cfg.RoomSize,
+	for {
+		select {
+		case cmd := <-m.commands:
+			now := time.Now()
+			var notifications []func()
+
+			switch cmd.kind {
+			case matchmakingCommandAdd:
+				notifications = m.handleAddToQueue(cmd.session, now)
+			case matchmakingCommandRemove:
+				notifications = m.handleRemoveFromQueue(cmd.session, now)
+			}
+
+			cmd.reply <- notifications
+
+		case now := <-tick:
+			notifications := m.processQueueTransitions(now)
+			if len(notifications) > 0 {
+				go runNotifications(notifications)
+			}
+		}
 	}
+
 }
 
 func (m *Matchmaker) AddToQueue(s *adler.Session) {
+	if s == nil {
+		return
+	}
+
+	reply := make(chan []func(), 1)
+
+	m.commands <- matchmakingCommand{
+		kind:    matchmakingCommandAdd,
+		session: s,
+		reply:   reply,
+	}
+
+	runNotifications(<-reply)
+}
+
+func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
+	if s == nil {
+		return
+	}
+
+	reply := make(chan []func(), 1)
+
+	m.commands <- matchmakingCommand{
+		kind:    matchmakingCommandRemove,
+		session: s,
+		reply:   reply,
+	}
+
+	runNotifications(<-reply)
+}
+
+func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) []func() {
 	var notifications []func()
 
 	queueStatus, ok := s.GetString(sessionKeyQueueStatus)
 	if ok && queueStatus == queueStatusPlaying {
-		return
+		return nil
 	}
 
-	m.mu.Lock()
-
 	if _, exists := m.inQueueMap[s]; exists {
-		m.mu.Unlock()
-		s.WriteJSON(adler.Map{
-			"type":    "queue_error",
-			"message": "You are already in a queue",
-		})
-		return
+		return []func(){
+			func() {
+				s.WriteJSON(adler.Map{
+					"type":    "queue_error",
+					"message": "You are already in a queue",
+				})
+			},
+		}
 	}
 
 	if _, exists := m.inWaitQueueMap[s]; exists {
-		m.mu.Unlock()
-		s.WriteJSON(adler.Map{
-			"type":    "wait_queue_error",
-			"message": "You are already in a queue",
-		})
-		return
+		return []func(){
+			func() {
+				s.WriteJSON(adler.Map{
+					"type":    "wait_queue_error",
+					"message": "You are already in a queue",
+				})
+			},
+		}
 	}
 
-	if m.maxQueue > 0 && len(m.queue) >= m.maxQueue {
-		m.waitQueue = append(m.waitQueue, s)
-		m.inWaitQueueMap[s] = struct{}{}
-		s.Set(sessionKeyQueueStatus, queueStatusWaiting)
-		notifications = append(notifications, m.processQueueTransitions()...)
-	} else {
-		notifications = append(notifications, m.addToMainQueue(s))
-		notifications = append(notifications, m.processQueueTransitions()...)
+	if m.maxQueue > 0 && m.queue.Len() >= m.maxQueue {
+		notifications = append(notifications, m.addToWaitingQueue(s, now))
+		notifications = append(notifications, m.processQueueTransitions(now)...)
+		return notifications
 	}
 
-	m.mu.Unlock()
+	notifications = append(notifications, m.addToMainQueue(s, now))
+	notifications = append(notifications, m.processQueueTransitions(now)...)
 
-	for _, n := range notifications {
-		n()
-	}
+	return notifications
 }
 
-func (m *Matchmaker) addToMainQueue(s *adler.Session) func() {
-	m.queue = append(m.queue, s)
-	m.inQueueMap[s] = struct{}{}
+func (m *Matchmaker) addToMainQueue(s *adler.Session, now time.Time) func() {
+	item := &queueItem{
+		session:    s,
+		enqueuedAt: now,
+	}
 
+	element := m.queue.PushBack(item)
+	m.inQueueMap[s] = element
 	delete(m.inWaitQueueMap, s)
 	s.Set(sessionKeyQueueStatus, queueStatusQueued)
 
@@ -117,61 +209,143 @@ func (m *Matchmaker) addToMainQueue(s *adler.Session) func() {
 	}
 }
 
-func (m *Matchmaker) processQueueTransitions() []func() {
-	var notifications []func()
+func (m *Matchmaker) addToWaitingQueue(s *adler.Session, now time.Time) func() {
+	item := &queueItem{
+		session:    s,
+		enqueuedAt: now,
+	}
 
-	notifications = append(notifications, m.tryCreateRoom()...)
-	notifications = append(notifications, m.promoteFromWaitingQueue()...)
-	notifications = append(notifications, m.tryCreateRoom()...)
+	element := m.waitQueue.PushBack(item)
+	m.inWaitQueueMap[s] = element
+	s.Set(sessionKeyQueueStatus, queueStatusWaiting)
 
-	return notifications
+	return func() {
+		s.WriteJSON(adler.Map{
+			"type":    "wait_queue_joined",
+			"message": "The main queue is full. You have joined the waiting queue.",
+		})
+	}
 }
 
-func (m *Matchmaker) tryCreateRoom() []func() {
+func (m *Matchmaker) processQueueTransitions(now time.Time) []func() {
 	var notifications []func()
 
-	for len(m.queue) >= m.roomSize {
-		players := make([]*adler.Session, m.roomSize)
-		copy(players, m.queue[:m.roomSize])
-		clear(m.queue[:m.roomSize])
-		m.queue = m.queue[m.roomSize:]
+	notifications = append(notifications, m.createFullRooms()...)
+	notifications = append(notifications, m.promoteFromWaitingQueue(now)...)
+	notifications = append(notifications, m.createFullRooms()...)
 
-		id, _ := uuid.NewV7()
-		roomID := "room_" + id.String()
-		room := m.adler.NewRoom(roomID)
-
-		for _, player := range players {
-			delete(m.inQueueMap, player)
-			room.Join(player)
-			player.Set(sessionKeyQueueStatus, queueStatusPlaying)
-			player.Set(sessionKeyRoomID, roomID)
-		}
-
-		notifications = append(notifications, func() {
-			room.BroadcastJSON(adler.Map{
-				"type":    "match_found",
-				"room_id": roomID,
-			})
-		})
+	partialRoomNotifications := m.createPartialRoomIfAllowed(now)
+	if len(partialRoomNotifications) > 0 {
+		notifications = append(notifications, partialRoomNotifications...)
+		notifications = append(notifications, m.promoteFromWaitingQueue(now)...)
+		notifications = append(notifications, m.createFullRooms()...)
 	}
 
 	return notifications
 }
 
-func (m *Matchmaker) promoteFromWaitingQueue() []func() {
+func (m *Matchmaker) createFullRooms() []func() {
 	var notifications []func()
 
-	for len(m.waitQueue) > 0 && (m.maxQueue == 0 || len(m.queue) < m.maxQueue) {
-		next := m.waitQueue[0]
-		m.waitQueue[0] = nil
-		m.waitQueue = m.waitQueue[1:]
-		delete(m.inWaitQueueMap, next)
-		m.queue = append(m.queue, next)
-		m.inQueueMap[next] = struct{}{}
-		next.Set(sessionKeyQueueStatus, queueStatusQueued)
+	for m.queue.Len() >= m.roomSize {
+		notifications = append(notifications, m.createRoomFromQueue(m.roomSize))
+	}
+
+	return notifications
+}
+
+func (m *Matchmaker) createPartialRoomIfAllowed(now time.Time) []func() {
+	if m.queue.Len() < m.minRoomSize {
+		return nil
+	}
+
+	if m.partialRoomTimeout > 0 {
+		front := m.queue.Front()
+		if front == nil {
+			return nil
+		}
+
+		item := front.Value.(*queueItem)
+		if now.Sub(item.enqueuedAt) < m.partialRoomTimeout { // must stay at least partialRoomTimeout
+			return nil
+		}
+	}
+
+	size := m.queue.Len()
+	if size > m.roomSize {
+		size = m.roomSize
+	}
+
+	return []func(){
+		m.createRoomFromQueue(size),
+	}
+}
+
+func (m *Matchmaker) createRoomFromQueue(size int) func() {
+	players := make([]*adler.Session, 0, size)
+	for i := 0; i < size; i++ {
+		front := m.queue.Front()
+		if front == nil {
+			break
+		}
+
+		item := front.Value.(*queueItem)
+		m.queue.Remove(front)
+		delete(m.inQueueMap, item.session)
+
+		players = append(players, item.session)
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New()
+	}
+
+	roomID := "room_" + id.String()
+	room := m.adler.NewRoom(roomID)
+
+	for _, player := range players {
+		room.Join(player)
+		player.Set(sessionKeyQueueStatus, queueStatusPlaying)
+		player.Set(sessionKeyRoomID, roomID)
+	}
+
+	return func() {
+		room.BroadcastJSON(adler.Map{
+			"type":    "match_found",
+			"room_id": roomID,
+			"players": len(players),
+		})
+	}
+}
+
+func (m *Matchmaker) promoteFromWaitingQueue(now time.Time) []func() {
+	var notifications []func()
+
+	for m.waitQueue.Len() > 0 && (m.maxQueue == 0 || m.queue.Len() < m.maxQueue) {
+		front := m.waitQueue.Front()
+		if front == nil {
+			break
+		}
+
+		item := front.Value.(*queueItem)
+		session := item.session
+
+		m.waitQueue.Remove(front)
+		delete(m.inWaitQueueMap, session)
+
+		newItem := &queueItem{
+			session:    session,
+			enqueuedAt: now, // changing the current enqueue time from waiting queue to normal queue
+		}
+
+		element := m.queue.PushBack(newItem)
+		m.inQueueMap[session] = element
+
+		session.Set(sessionKeyQueueStatus, queueStatusQueued)
 
 		notifications = append(notifications, func() {
-			next.WriteJSON(adler.Map{
+			session.WriteJSON(adler.Map{
 				"type":    "promoted_to_queue",
 				"message": "A spot opened up. You are now in the main queue",
 			})
@@ -181,43 +355,59 @@ func (m *Matchmaker) promoteFromWaitingQueue() []func() {
 	return notifications
 }
 
-func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
-	var notifications []func()
-
-	m.mu.Lock()
-
-	if m.removeFromSlice(&m.queue, m.inQueueMap, s) {
-		s.Set(sessionKeyQueueStatus, queueStatusLeft)
-		notifications = append(notifications, m.processQueueTransitions()...)
-	} else if m.removeFromSlice(&m.waitQueue, m.inWaitQueueMap, s) {
-		s.Set(sessionKeyQueueStatus, queueStatusLeft)
-	}
-
-	m.mu.Unlock()
-
-	for _, n := range notifications {
-		n()
+func runNotifications(notifications []func()) {
+	for _, notification := range notifications {
+		if notification != nil {
+			notification()
+		}
 	}
 }
 
-func (m *Matchmaker) removeFromSlice(slice *[]*adler.Session, mapSession map[*adler.Session]struct{}, s *adler.Session) bool {
-	items := *slice
-	for i, session := range items {
-		if session == s {
-			copy(items[i:], items[i+1:])
-			items[len(items)-1] = nil
-			*slice = items[:len(items)-1]
-			delete(mapSession, s)
-			return true
-		}
+func (m *Matchmaker) handleRemoveFromQueue(s *adler.Session, now time.Time) []func() {
+	var notifications []func()
+
+	if element, exists := m.inQueueMap[s]; exists {
+		m.queue.Remove(element)
+		delete(m.inQueueMap, s)
+
+		s.Set(sessionKeyQueueStatus, queueStatusLeft)
+		notifications = append(notifications, m.processQueueTransitions(now)...)
+		return notifications
 	}
-	return false
+
+	if element, exists := m.inWaitQueueMap[s]; exists {
+		m.waitQueue.Remove(element)
+		delete(m.inWaitQueueMap, s)
+		s.Set(sessionKeyQueueStatus, queueStatusLeft)
+		return nil
+	}
+
+	return nil
+}
+
+func clampTime(v, min, max time.Duration) time.Duration {
+	if v <= min {
+		return min
+	}
+
+	if v >= max {
+		return max
+	}
+
+	return v
+}
+
+func matchmakingTickInterval(timeout time.Duration) time.Duration {
+	return clampTime(timeout, 10*time.Millisecond, 1*time.Second)
 }
 
 func newMatchmakingConfig(opts ...MatchmakingOption) *MatchmakingConfig {
 	cfg := &MatchmakingConfig{
-		MaxQueue: 100,
-		RoomSize: 4,
+		MaxQueue:           100,
+		RoomSize:           4,
+		MinRoomSize:        0,
+		PartialRoomTimeout: 0,
+		CommandBuffer:      1024,
 	}
 
 	for _, opt := range opts {
@@ -228,8 +418,22 @@ func newMatchmakingConfig(opts ...MatchmakingOption) *MatchmakingConfig {
 		opt(cfg)
 	}
 
-	if cfg.MaxQueue > 0 && cfg.RoomSize > cfg.MaxQueue {
-		panic("room size is bigger than max queue")
+	if cfg.RoomSize < 2 {
+		cfg.RoomSize = 2
+	}
+
+	if cfg.MinRoomSize <= 0 {
+		cfg.MinRoomSize = cfg.RoomSize
+	}
+
+	cfg.MinRoomSize = min(cfg.RoomSize, cfg.MinRoomSize)
+
+	if cfg.MaxQueue < 0 {
+		cfg.MaxQueue = 0
+	}
+
+	if cfg.CommandBuffer <= 0 {
+		cfg.CommandBuffer = 1024
 	}
 
 	return cfg
@@ -241,8 +445,26 @@ func WithRoomSize(roomSize int) MatchmakingOption {
 	}
 }
 
+func WithMinRoomSize(minRoomSize int) MatchmakingOption {
+	return func(mc *MatchmakingConfig) {
+		mc.MinRoomSize = minRoomSize
+	}
+}
+
 func WithQueueLength(queueLength int) MatchmakingOption {
 	return func(mc *MatchmakingConfig) {
 		mc.MaxQueue = queueLength
+	}
+}
+
+func WithPartialRoomTimeout(timeout time.Duration) MatchmakingOption {
+	return func(mc *MatchmakingConfig) {
+		mc.PartialRoomTimeout = timeout
+	}
+}
+
+func WithCommandBuffer(size int) MatchmakingOption {
+	return func(mc *MatchmakingConfig) {
+		mc.CommandBuffer = size
 	}
 }
