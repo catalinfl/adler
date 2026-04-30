@@ -2,6 +2,7 @@ package matchmaking
 
 import (
 	"container/list"
+	"errors"
 	"time"
 
 	"github.com/catalinfl/adler"
@@ -16,6 +17,11 @@ const (
 	queueStatusQueued  = "queued"
 	queueStatusWaiting = "waiting"
 	queueStatusPlaying = "playing"
+)
+
+var (
+	ErrSessionNil     = errors.New("session is nil")
+	ErrMatchmakerBusy = errors.New("matchmaker busy")
 )
 
 type matchmakingCommandKind int8
@@ -92,7 +98,6 @@ func (m *Matchmaker) run() {
 		select {
 		case cmd := <-m.commands:
 			now := time.Now()
-
 			switch cmd.kind {
 			case matchmakingCommandAdd:
 				m.handleAddToQueue(cmd.session, now)
@@ -104,16 +109,21 @@ func (m *Matchmaker) run() {
 			m.processQueueTransitions(now)
 		}
 	}
-
 }
 
-func (m *Matchmaker) AddToQueue(s *adler.Session) {
+func (m *Matchmaker) AddToQueue(s *adler.Session) error {
 	if s == nil {
-		return
+		return ErrSessionNil
 	}
-	m.commands <- matchmakingCommand{
+	select {
+	case m.commands <- matchmakingCommand{
 		kind:    matchmakingCommandAdd,
 		session: s,
+	}:
+		return nil
+	default:
+		return ErrMatchmakerBusy
+
 	}
 
 }
@@ -140,6 +150,7 @@ func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) {
 			"type":    "queue_error",
 			"message": "You are already in a queue",
 		})
+		return
 	}
 
 	if _, exists := m.inWaitQueueMap[s]; exists {
@@ -147,6 +158,7 @@ func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) {
 			"type":    "wait_queue_error",
 			"message": "You are already in a queue",
 		})
+		return
 	}
 
 	if m.maxQueue > 0 && m.queue.Len() >= m.maxQueue {
@@ -214,22 +226,19 @@ func (m *Matchmaker) createPartialRoomIfAllowed(now time.Time) {
 		}
 
 		item := front.Value.(*queueItem)
-		if now.Sub(item.enqueuedAt) < m.partialRoomTimeout { // must stay at least partialRoomTimeout
+		if now.Sub(item.enqueuedAt) < m.partialRoomTimeout { // must stay at least partialRoomTimeout time
 			return
 		}
 	}
 
 	size := m.queue.Len()
-	if size > m.roomSize {
-		size = m.roomSize
-	}
-
+	size = min(size, m.roomSize)
 	m.createRoomFromQueue(size)
 }
 
 func (m *Matchmaker) createRoomFromQueue(size int) {
 	players := make([]*adler.Session, 0, size)
-	for i := 0; i < size; i++ {
+	for range size {
 		front := m.queue.Front()
 		if front == nil {
 			break
@@ -244,7 +253,7 @@ func (m *Matchmaker) createRoomFromQueue(size int) {
 
 	id, err := uuid.NewV7()
 	if err != nil {
-		id = uuid.New()
+		id = uuid.New() // CAREFUL! Generating UUIDv4 instead of UUIDv7 could cause issues
 	}
 
 	roomID := "room_" + id.String()
@@ -293,7 +302,6 @@ func (m *Matchmaker) promoteFromWaitingQueue(now time.Time) {
 }
 
 func (m *Matchmaker) handleRemoveFromQueue(s *adler.Session, now time.Time) {
-
 	if element, exists := m.inQueueMap[s]; exists {
 		m.queue.Remove(element)
 		delete(m.inQueueMap, s)
@@ -352,7 +360,7 @@ func newMatchmakingConfig(opts ...MatchmakingOption) *MatchmakingConfig {
 		cfg.MinRoomSize = cfg.RoomSize
 	}
 
-	cfg.MinRoomSize = min(cfg.RoomSize, cfg.MinRoomSize)
+	cfg.MinRoomSize = min(cfg.RoomSize, cfg.MinRoomSize) // if MinRoomSize is bigger than RoomSize, set MinRoomSize as RoomSize
 
 	if cfg.MaxQueue < 0 {
 		cfg.MaxQueue = 0
