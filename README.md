@@ -14,7 +14,7 @@ Adler is a lightweight WebSocket server toolkit for Go. It gives you a small, fo
 
 ## Roadmap
 
-- [ ] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
+- [x] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
 - [ ] Add ELO-based matchmaking with configurable rating buckets and match quality rules.
 
 ## Installation
@@ -215,7 +215,46 @@ Room helpers:
 - `CloseRoom()` blocks new joins
 - `Broadcast`, `BroadcastBinary`, `BroadcastFilter`, `BroadcastJSON`, `BroadcastJSONFilter`
 
-### 7. Close handling
+### 7. Matchmaking with the Matchmaker Module
+
+The `matchmaker` module provides queue-based matchmaking that groups sessions into rooms automatically. It uses a background goroutine to manage queues and ensure fair player distribution.
+
+Features:
+
+- **Non-blocking queue operations**: `AddToQueue()` and `RemoveFromQueue()` send commands to a worker goroutine
+- **Main and waiting queues**: Keeps a main queue and an optional waiting queue when the main queue reaches capacity
+- **Automatic room creation**: Creates Adler rooms when enough players are queued
+- **JSON event notifications**: Sends events to sessions as they move through the queue
+
+The matchmaker sends these JSON messages:
+
+- `"queue_joined"` - Session added to main queue
+- `"wait_queue_joined"` - Session added to waiting queue (main is full)
+- `"promoted_to_queue"` - Session promoted from waiting to main queue
+- `"match_found"` - Match room created with `room_id` and player count
+
+Example:
+
+```go
+import "github.com/catalinfl/adler/matchmaker"
+
+mm := matchmaking.NewMatchmaker(a, 
+    matchmaking.WithRoomSize(4),
+    matchmaking.WithMaxQueue(20),
+)
+
+a.HandleConnect(func(s *adler.Session) {
+    _ = mm.AddToQueue(s)
+})
+
+a.HandleMessage(func(s *adler.Session, msg []byte) {
+    if string(msg) == "leave_queue" {
+        mm.RemoveFromQueue(s)
+    }
+})
+```
+
+### 8. Close handling
 
 If the client sends a close frame, `HandleClose` receives the close status code and reason.
 
