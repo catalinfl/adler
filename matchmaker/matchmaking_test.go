@@ -293,3 +293,45 @@ func TestClosureBugPromotedPlayers(t *testing.T) {
 
 	t.Log("Promotion flow works: waiting player receives promoted_to_queue on correct connection")
 }
+
+func TestMatchmakerEightPlayersOneSecondInterval(t *testing.T) {
+	_, srv, sessions := setupMatchmakerServer(t, 2) // room size = 2 => 4 rooms for 8 players
+
+	conns := make([]net.Conn, 0, 8)
+	for i := 1; i <= 8; i++ {
+		conn := mustDialWS(t, wsURL(srv.URL)+"?cid="+fmt.Sprintf("%d", i))
+		conns = append(conns, conn)
+		t.Logf("Dialed client %d", i)
+		time.Sleep(1 * time.Second) // 1 second interval between connects
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+
+	// Collect room IDs reported to each client and print them
+	roomIDs := make([]string, 0, len(conns))
+	unique := map[string]struct{}{}
+	for i, conn := range conns {
+		rid := waitMatchRoomID(t, conn)
+		t.Logf("Client %d received match_found -> room_id: %s", i+1, rid)
+		roomIDs = append(roomIDs, rid)
+		unique[rid] = struct{}{}
+	}
+
+	t.Logf("Unique rooms created: %d", len(unique))
+	for r := range unique {
+		t.Logf("  room: %s", r)
+	}
+
+	// Print server-side room assignment for each session
+	for i := 0; i < 8; i++ {
+		s := waitSession(t, sessions, fmt.Sprintf("missing session %d", i+1))
+		if s.Room() != nil {
+			t.Logf("Server session %d is in room: %s", i+1, s.Room().Name())
+		} else {
+			t.Logf("Server session %d has no room", i+1)
+		}
+	}
+}
