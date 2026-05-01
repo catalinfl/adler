@@ -4,8 +4,34 @@ All notable changes for this project are documented here.
 
 ## Roadmap
 
-- [ ] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
+- [x] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
 - [ ] Implement matchmaking based on ELO ranking, including configurable ranking buckets and match quality rules.
+
+## 1.2.0
+
+### Added
+
+- **Dedicated Matchmaker Module**: New `matchmaker` module for queue creation, queue management, and match orchestration
+- **Channel-Based Matchmaking**: Implemented non-blocking matchmaking system using Go channels for improved concurrency
+- **Notification System**: Legacy notification system for matchmaking events and queue updates
+- **UUID Support**: Direct UUID support for session identification and management
+- **Multiple Room Matchmaking**: Support for matchmaking across multiple rooms with proper test coverage
+- **Custom Configuration**: Separated matchmaker configuration into dedicated file
+
+### Changed
+
+- Matchmaking logic refactored for better performance and maintainability
+- State management in matchmaking now non-blocking
+- Improved notification delivery through channel-based system
+
+### Fixed
+
+- Session variable capture in promotion queue (closure bug fix)
+- Partial room creation when `minRoomSize=0` and `partialRoomTimeout=0`
+
+### Documentation
+
+- Improved documentation for normal matchmaking flows
 
 ## 1.1.0
 
