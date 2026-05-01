@@ -20,7 +20,16 @@ const (
 )
 
 var (
-	ErrSessionNil     = errors.New("session is nil")
+	// ErrSessionNil is returned when a queue operation receives a nil session.
+	//
+	// The matchmaker cannot enqueue or remove a nil session because the worker
+	// needs a stable pointer to track the session in its internal maps.
+	ErrSessionNil = errors.New("session is nil")
+	// ErrMatchmakerBusy is returned when AddToQueue cannot place a command into
+	// the internal command buffer immediately.
+	//
+	// This means the matchmaker goroutine has not yet consumed previous work,
+	// so the caller can retry later instead of blocking the connect flow.
 	ErrMatchmakerBusy = errors.New("matchmaker busy")
 )
 
@@ -41,6 +50,13 @@ type matchmakingCommand struct {
 	session *adler.Session
 }
 
+// Matchmaker owns the matchmaking queues and turns sessions into rooms.
+//
+// Public methods do not modify the queues directly. They send commands to an
+// internal worker goroutine, which serializes all queue mutations. That design
+// keeps queue state consistent while still letting the rest of the application
+// call AddToQueue and RemoveFromQueue from request handlers, connect hooks, or
+// disconnect hooks.
 type Matchmaker struct {
 	commands           chan matchmakingCommand
 	waitQueue          *list.List
@@ -81,6 +97,13 @@ func (m *Matchmaker) run() {
 	}
 }
 
+// AddToQueue asks the matchmaker to place a session into the active queue.
+//
+// The call is non-blocking. It only enqueues a command for the worker goroutine
+// and returns ErrMatchmakerBusy if the command buffer is full. When the worker
+// eventually processes the request, it either places the session into the main
+// queue, moves it to the waiting queue, or leaves it alone if the session is
+// already marked as playing in a room.
 func (m *Matchmaker) AddToQueue(s *adler.Session) error {
 	if s == nil {
 		return ErrSessionNil
@@ -98,6 +121,14 @@ func (m *Matchmaker) AddToQueue(s *adler.Session) error {
 
 }
 
+// RemoveFromQueue asks the matchmaker to remove a session from whichever queue
+// currently owns it.
+//
+// The function is intentionally fire-and-forget because disconnect and leave
+// flows usually care about quick cleanup, not an immediate confirmation. The
+// worker removes the session from the main queue or the waiting queue, updates
+// the session status to "left", and then reprocesses the remaining queue if a
+// main-queue slot was freed.
 func (m *Matchmaker) RemoveFromQueue(s *adler.Session) {
 	if s == nil {
 		return
