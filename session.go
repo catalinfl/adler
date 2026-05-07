@@ -260,6 +260,17 @@ func (s *Session) WriteJSON(v Map) error {
 	return s.write(jsonContent, ws.OpText)
 }
 
+// Write marshals v using the configured serializer and queues it as a message.
+// The serializer determines whether the message is sent as JSON (text) or Protobuf (binary).
+func (s *Session) Write(v any) error {
+	data, opcode, err := s.adler.serializer.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	return s.write(data, opcode)
+}
+
 // WriteJSONWithDeadline queues a JSON payload with a custom write deadline.
 func (s *Session) WriteJSONWithDeadline(message any, deadline time.Duration) error {
 	jsonContent, err := json.Marshal(message)
