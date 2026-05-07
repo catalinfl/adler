@@ -13,8 +13,10 @@ import (
 
 	"github.com/catalinfl/adler"
 	matchmaking "github.com/catalinfl/adler/matchmaker"
+	"github.com/catalinfl/adler/matchmaker/github.com/catalinfl/adler/matchmaking/pb"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"google.golang.org/protobuf/proto"
 )
 
 type queueEvent struct {
@@ -68,17 +70,25 @@ func mustDialWS(t *testing.T, url string) net.Conn {
 func waitQueueEvent(t *testing.T, conn net.Conn) queueEvent {
 	t.Helper()
 
-	op, payload := readServerMessage(t, conn, 2*time.Second)
-	if op != ws.OpText {
-		t.Fatalf("unexpected opcode: got=%v want=%v", op, ws.OpText)
-	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		timeout := time.Until(deadline)
+		if timeout <= 0 {
+			t.Fatal("timed out waiting for queue event")
+		}
 
-	var event queueEvent
-	if err := json.Unmarshal(payload, &event); err != nil {
-		t.Fatalf("unmarshal server event: %v", err)
-	}
+		op, payload := readServerMessage(t, conn, timeout)
+		if op != ws.OpText {
+			continue
+		}
 
-	return event
+		var event queueEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			t.Fatalf("unmarshal server event: %v", err)
+		}
+
+		return event
+	}
 }
 
 func waitMatchRoomID(t *testing.T, conn net.Conn) string {
@@ -280,13 +290,8 @@ func TestClosureBugPromotedPlayers(t *testing.T) {
 
 	// Removing one main-queue player opens exactly one slot, so only p3 is promoted.
 	t.Log("Waiting for promoted_to_queue on player 3 (conns[2])...")
-	op, payload := readServerMessage(t, conns[2], 500*time.Millisecond)
-	t.Logf("Player 3 received: opcode=%v, payload=%s", op, string(payload))
-
-	var evt queueEvent
-	if err := json.Unmarshal(payload, &evt); err != nil {
-		t.Fatalf("player 3 unmarshal error: %v", err)
-	}
+	evt := waitQueueEvent(t, conns[2])
+	t.Logf("Player 3 received: %#v", evt)
 	if evt.Type != "promoted_to_queue" {
 		t.Fatalf("player 3 expected promoted_to_queue, got %q", evt.Type)
 	}
@@ -333,5 +338,98 @@ func TestMatchmakerEightPlayersOneSecondInterval(t *testing.T) {
 		} else {
 			t.Logf("Server session %d has no room", i+1)
 		}
+	}
+}
+
+// waitQueueEventProtobuf reads messages until a protobuf QueueStatus is received,
+// skipping any JSON text messages that may be sent alongside protobuf.
+func waitQueueEventProtobuf(t *testing.T, conn net.Conn) *pb.QueueStatus {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		timeout := time.Until(deadline)
+		if timeout <= 0 {
+			t.Fatal("timed out waiting for protobuf queue event")
+		}
+
+		op, payload := readServerMessage(t, conn, timeout)
+		if op != ws.OpBinary {
+			continue
+		}
+
+		event := &pb.QueueStatus{}
+		if err := proto.Unmarshal(payload, event); err != nil {
+			t.Fatalf("unmarshal protobuf event: %v", err)
+		}
+
+		return event
+	}
+}
+
+// TestMatchmakerWithProtobuf verifies that matchmaker sends QueueStatus messages
+// as protobuf binary when the protocol is set to Protobuf.
+func TestMatchmakerWithProtobuf(t *testing.T) {
+	a := adler.New(
+		adler.WithDispatchAsync(true),
+		adler.WithMessageBufferSize(8),
+		adler.WithProtocol(adler.Protobuf),
+	)
+	mm := matchmaking.NewMatchmaker(a, matchmaking.WithRoomSize(2))
+	sessions := make(chan *adler.Session, 8)
+
+	a.HandleConnect(func(s *adler.Session) {
+		mm.AddToQueue(s)
+		sessions <- s
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = a.HandleRequest(w, r)
+	}))
+	defer srv.Close()
+
+	// Connect two clients
+	conn1 := mustDialWS(t, wsURL(srv.URL)+"?cid=1")
+	defer conn1.Close()
+
+	conn2 := mustDialWS(t, wsURL(srv.URL)+"?cid=2")
+	defer conn2.Close()
+
+	_ = waitSession(t, sessions, "missing first session")
+	_ = waitSession(t, sessions, "missing second session")
+
+	// First client should receive queue_joined
+	evt1 := waitQueueEventProtobuf(t, conn1)
+	if evt1.GetQueueJoined() == nil {
+		t.Fatalf("expected QueueJoined, got: %T", evt1.Payload)
+	}
+	if evt1.GetQueueJoined().Message != "You have joined the main queue" {
+		t.Fatalf("unexpected message: %q", evt1.GetQueueJoined().Message)
+	}
+
+	// Second client should receive queue_joined
+	evt2 := waitQueueEventProtobuf(t, conn2)
+	if evt2.GetQueueJoined() == nil {
+		t.Fatalf("expected QueueJoined, got: %T", evt2.Payload)
+	}
+
+	// Both should receive match_found (order may vary)
+	match1 := waitQueueEventProtobuf(t, conn1)
+	match2 := waitQueueEventProtobuf(t, conn2)
+
+	if match1.GetMatchFound() == nil {
+		t.Fatalf("expected MatchFound for conn1, got: %T", match1.Payload)
+	}
+	if match2.GetMatchFound() == nil {
+		t.Fatalf("expected MatchFound for conn2, got: %T", match2.Payload)
+	}
+
+	// Both should receive the same room ID
+	if match1.GetMatchFound().RoomId != match2.GetMatchFound().RoomId {
+		t.Fatalf("room IDs don't match: %q vs %q", match1.GetMatchFound().RoomId, match2.GetMatchFound().RoomId)
+	}
+
+	if match1.GetMatchFound().Players != 2 {
+		t.Fatalf("expected 2 players, got %d", match1.GetMatchFound().Players)
 	}
 }
