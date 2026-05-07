@@ -2,6 +2,16 @@ package adler
 
 import "time"
 
+// Protocol defines the serialization format for messages between server and clients.
+type Protocol int
+
+const (
+	// JSON protocol: messages are serialized as JSON text.
+	JSON Protocol = iota
+	// Protobuf protocol: messages are serialized as binary protobuf.
+	Protobuf
+)
+
 // Config contains runtime tuning knobs for Adler sessions.
 //
 // Use constructor options (With...) to override individual fields while
@@ -32,6 +42,9 @@ type Config struct {
 	// DeleteRoomOnEmpty controls whether rooms are removed automatically
 	// when the last session leaves.
 	DeleteRoomOnEmpty bool
+	// Prefered protocol by server.
+	// This is the used protocol in matchmaker and in other structures of Adler.
+	Protocol Protocol
 }
 
 // Option mutates Config during construction.
@@ -84,6 +97,14 @@ func WithDeleteRoomOnEmpty(enabled bool) Option {
 	}
 }
 
+// WithProtocol sets the serialization protocol for the Adler instance.
+// Use JSON for text-based messaging or Protobuf for binary protobuf messages.
+func WithProtocol(p Protocol) Option {
+	return func(c *Config) {
+		c.Protocol = p
+	}
+}
+
 // defaultMessageBufferSize balances burst tolerance with per-session memory use.
 const defaultMessageBufferSize = 128
 
@@ -96,6 +117,7 @@ func newConfig(opts ...Option) *Config {
 		MessageBufferSize: defaultMessageBufferSize,
 		DispatchAsync:     true,
 		DeleteRoomOnEmpty: true,
+		Protocol:          JSON,
 	}
 
 	for _, opt := range opts {
