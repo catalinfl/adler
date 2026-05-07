@@ -1,0 +1,23 @@
+syntax = "proto3";
+package matchmaking;
+
+option go_package = "github.com/catalinfl/adler/matchmaking/pb";
+
+message QueueStatus {
+    oneof payload {
+        QueueJoined queue_joined = 1;
+        WaitQueueJoined wait_queue_joined = 2;
+        PromotedToQueue promoted_to_queue = 3;
+        MatchFound match_found = 4;
+        QueueError queue_error = 5;
+    }
+}
+
+message QueueJoined { string message = 1; }
+message WaitQueueJoined { string message = 1; }
+message PromotedToQueue { string message = 1; }
+message MatchFound { 
+    string room_id = 1;
+    int32 players = 2;
+}
+message QueueError { string message = 1; }

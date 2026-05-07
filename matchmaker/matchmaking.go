@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/catalinfl/adler"
+	"github.com/catalinfl/adler/matchmaker/github.com/catalinfl/adler/matchmaking/pb"
 	"github.com/google/uuid"
 )
 
@@ -147,18 +148,26 @@ func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) {
 	}
 
 	if _, exists := m.inQueueMap[s]; exists {
-		s.WriteJSON(adler.Map{
-			"type":    "queue_error",
-			"message": "You are already in a queue",
-		})
+		msg := &pb.QueueStatus{
+			Payload: &pb.QueueStatus_QueueError{
+				QueueError: &pb.QueueError{
+					Message: "You are already in a queue",
+				},
+			},
+		}
+		s.Write(msg)
 		return
 	}
 
 	if _, exists := m.inWaitQueueMap[s]; exists {
-		s.WriteJSON(adler.Map{
-			"type":    "wait_queue_error",
-			"message": "You are already in a queue",
-		})
+		msg := &pb.QueueStatus{
+			Payload: &pb.QueueStatus_QueueError{
+				QueueError: &pb.QueueError{
+					Message: "You are already in a queue",
+				},
+			},
+		}
+		s.Write(msg)
 		return
 	}
 
@@ -181,10 +190,14 @@ func (m *Matchmaker) addToMainQueue(s *adler.Session, now time.Time) {
 	m.inQueueMap[s] = element
 	delete(m.inWaitQueueMap, s)
 	s.Set(sessionKeyQueueStatus, queueStatusQueued)
-	s.WriteJSON(adler.Map{
-		"type":    "queue_joined",
-		"message": "You have joined the main queue",
-	})
+	msg := &pb.QueueStatus{
+		Payload: &pb.QueueStatus_QueueJoined{
+			QueueJoined: &pb.QueueJoined{
+				Message: "You have joined the main queue",
+			},
+		},
+	}
+	_ = s.Write(msg)
 }
 
 func (m *Matchmaker) addToWaitingQueue(s *adler.Session, now time.Time) {
@@ -196,10 +209,14 @@ func (m *Matchmaker) addToWaitingQueue(s *adler.Session, now time.Time) {
 	element := m.waitQueue.PushBack(item)
 	m.inWaitQueueMap[s] = element
 	s.Set(sessionKeyQueueStatus, queueStatusWaiting)
-	s.WriteJSON(adler.Map{
-		"type":    "wait_queue_joined",
-		"message": "The main queue is full. You have joined the waiting queue.",
-	})
+	msg := &pb.QueueStatus{
+		Payload: &pb.QueueStatus_WaitQueueJoined{
+			WaitQueueJoined: &pb.WaitQueueJoined{
+				Message: "The main queue is full. You have joined the waiting queue.",
+			},
+		},
+	}
+	_ = s.Write(msg)
 }
 
 func (m *Matchmaker) processQueueTransitions(now time.Time) {
@@ -265,11 +282,16 @@ func (m *Matchmaker) createRoomFromQueue(size int) {
 		player.Set(sessionKeyQueueStatus, queueStatusPlaying)
 		player.Set(sessionKeyRoomID, roomID)
 	}
-	room.BroadcastJSON(adler.Map{
-		"type":    "match_found",
-		"room_id": roomID,
-		"players": len(players),
-	})
+
+	msg := &pb.QueueStatus{
+		Payload: &pb.QueueStatus_MatchFound{
+			MatchFound: &pb.MatchFound{
+				RoomId:  roomID,
+				Players: int32(len(players)),
+			},
+		},
+	}
+	room.BroadcastAny(msg)
 }
 
 func (m *Matchmaker) promoteFromWaitingQueue(now time.Time) {
@@ -295,10 +317,14 @@ func (m *Matchmaker) promoteFromWaitingQueue(now time.Time) {
 
 		session.Set(sessionKeyQueueStatus, queueStatusQueued)
 
-		session.WriteJSON(adler.Map{
-			"type":    "promoted_to_queue",
-			"message": "A spot opened up. You are now in the main queue",
-		})
+		msg := &pb.QueueStatus{
+			Payload: &pb.QueueStatus_PromotedToQueue{
+				PromotedToQueue: &pb.PromotedToQueue{
+					Message: "A spot opened up. You are now in the main queue",
+				},
+			},
+		}
+		session.Write(msg)
 	}
 }
 
