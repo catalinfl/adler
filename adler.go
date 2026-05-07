@@ -35,11 +35,12 @@ type handlers struct {
 // It owns active sessions, rooms and all user-provided callbacks.
 type Adler struct {
 	// Config holds runtime behavior knobs used by session read/write loops.
-	Config   *Config
-	core     *core
-	handlers handlers
-	rooms    map[string]*Room
-	roomsMu  sync.RWMutex
+	Config     *Config
+	serializer Serializer
+	core       *core
+	handlers   handlers
+	rooms      map[string]*Room
+	roomsMu    sync.RWMutex
 }
 
 // New initializes a ready-to-use Adler instance.
@@ -49,11 +50,22 @@ func New(options ...Option) *Adler {
 	handlers := handlers{}
 	cfg := newConfig(options...)
 
+	var serializer Serializer
+	switch cfg.Protocol {
+	case JSON:
+		serializer = JSONSerializer{}
+	case Protobuf:
+		serializer = ProtobufSerializer{}
+	default:
+		serializer = JSONSerializer{}
+	}
+
 	return &Adler{
-		Config:   cfg,
-		core:     newCore(),
-		handlers: handlers,
-		rooms:    make(map[string]*Room),
+		Config:     cfg,
+		core:       newCore(),
+		handlers:   handlers,
+		rooms:      make(map[string]*Room),
+		serializer: serializer,
 	}
 }
 
@@ -369,4 +381,15 @@ func (a *Adler) Room(roomName string) (*Room, error) {
 		return nil, ErrRoomNotFound
 	}
 	return room, nil
+}
+
+// BroadcastAny marshals v using the configured serializer and broadcasts it to all connected sessions.
+// The serializer determines whether the message is sent as JSON (text) or Protobuf (binary).
+func (a *Adler) BroadcastAny(v any) error {
+	data, opcode, err := a.serializer.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	return a.broadcast(data, opcode)
 }
