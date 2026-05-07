@@ -15,4 +15,6 @@ var (
 	ErrCoreExit            = errors.New("cannot exit from core")
 	ErrRoomNotFound        = errors.New("room not found")
 	ErrRoomNotEmpty        = errors.New("room is not empty")
+	ErrProtobufValue       = errors.New("protobuf serializer: value must implement proto.message")
+	ErrProtobufTarget      = errors.New("protobuf serializer: target must implement proto.message")
 )
