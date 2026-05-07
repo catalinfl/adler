@@ -206,6 +206,18 @@ func (r *Room) BroadcastJSONFilter(v Map, filter func(*Session) bool) error {
 	return nil
 }
 
+// BroadcastAny marshals v using the configured serializer and broadcasts it to all room sessions.
+// The serializer determines whether the message is sent as JSON (text) or Protobuf (binary).
+func (r *Room) BroadcastAny(v any) error {
+	data, opcode, err := r.adler.serializer.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	r.broadcast(data, opcode, nil)
+	return nil
+}
+
 func (r *Room) broadcast(content []byte, opCode ws.OpCode, filter func(*Session) bool) {
 	r.mu.RLock()
 	sessions := make([]*Session, 0, len(r.sessions))
