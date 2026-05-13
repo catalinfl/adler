@@ -7,6 +7,29 @@ All notable changes for this project are documented here.
 - [x] Add a dedicated matchmaker module for queue creation, queue management, and match orchestration.
 - [ ] Implement matchmaking based on ELO ranking, including configurable ranking buckets and match quality rules.
 
+## 1.3.0
+
+### Added
+
+- Protocol selection via `WithProtocol` and `Protocol` constants (`JSON`, `Protobuf`)
+- Serializer layer with JSON and Protobuf implementations
+- Protocol-aware helpers: `Session.Write`, `Adler.BroadcastAny`, `Room.BroadcastAny`
+- Protobuf queue event schema and generated package (`matchmaker/matchmaking.proto`)
+- JSON marshaling for `QueueStatus` to preserve existing JSON event shapes
+- Protobuf validation errors: `ErrProtobufValue`, `ErrProtobufTarget`
+
+### Changed
+
+- Matchmaker queue notifications now use protobuf `QueueStatus` messages routed through the serializer
+
+### Testing
+
+- Added real WebSocket integration tests for matchmaking room creation and queue events
+
+### Documentation
+
+- Documented protocol configuration and protocol-aware messaging helpers
+
 ## 1.2.0
 
 ### Added

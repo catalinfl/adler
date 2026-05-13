@@ -7,6 +7,7 @@ Adler is a lightweight WebSocket server toolkit for Go. It gives you a small, fo
 - WebSocket upgrade from `net/http`
 - Session lifecycle hooks
 - Text, binary, and JSON messaging
+- Protocol-aware JSON or Protobuf serialization (`Write`, `BroadcastAny`)
 - Global broadcast, filtered broadcast, and targeted session sends
 - Rooms with join, leave, and room-level broadcast helpers
 - Per-session key-value storage
@@ -70,7 +71,7 @@ Use `adler.New()` to build a server instance. You can pass configuration options
 a := adler.New(
     adler.WithDispatchAsync(true),
     adler.WithMessageBufferSize(256),
-    adler.WithPingPeriod(30*time.Second),
+    adler.WithPingPeriod(30),
 )
 ```
 
@@ -115,6 +116,7 @@ http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 
 Messaging helpers:
 
+- `Write(any)` (protocol-aware JSON text or Protobuf binary)
 - `WriteText([]byte)`
 - `WriteTextWithDeadline([]byte, time.Duration)`
 - `WriteBinary([]byte)`
@@ -122,6 +124,10 @@ Messaging helpers:
 - `WriteJSON(adler.Map)`
 - `WriteJSONWithDeadline(any, time.Duration)`
 - `Close(...[]byte)`
+
+Protocol-aware helpers (`Write`, `BroadcastAny`, `Room.BroadcastAny`) use the server
+protocol (JSON by default). Set `adler.WithProtocol(adler.Protobuf)` to emit
+protobuf binary frames.
 
 Storage helpers:
 
@@ -172,6 +178,7 @@ Use server-level broadcast helpers when you want to send to multiple sessions.
 - `BroadcastBinaryFilter([]byte, func(*Session) bool)` sends binary to matching sessions
 - `BroadcastJSON(adler.Map)` broadcasts JSON
 - `BroadcastJSONFilter(adler.Map, func(*Session) bool)` broadcasts JSON to matching sessions
+- `BroadcastAny(any)` broadcasts using the configured protocol
 - `BroadcastOthers([]byte, *Session)` sends to everyone except the target session
 - `SendTo([]byte, *Session)` sends only to one session
 
@@ -213,7 +220,7 @@ Room helpers:
 - `Leave(*Session)` removes a session
 - `OpenRoom()` allows joins again
 - `CloseRoom()` blocks new joins
-- `Broadcast`, `BroadcastBinary`, `BroadcastFilter`, `BroadcastJSON`, `BroadcastJSONFilter`
+- `Broadcast`, `BroadcastBinary`, `BroadcastFilter`, `BroadcastJSON`, `BroadcastJSONFilter`, `BroadcastAny`
 
 ### 7. Matchmaking with the Matchmaker Module
 
@@ -226,7 +233,9 @@ Features:
 - **Automatic room creation**: Creates Adler rooms when enough players are queued
 - **JSON event notifications**: Sends events to sessions as they move through the queue
 
-The matchmaker sends these JSON messages:
+Matchmaker queue events are defined in [matchmaker/matchmaking.proto](matchmaker/matchmaking.proto) and
+emitted as protobuf `QueueStatus` messages. When the Adler protocol is JSON (default),
+these events are marshaled to the same JSON shapes as before:
 
 - `"queue_joined"` - Session added to main queue
 - `"wait_queue_joined"` - Session added to waiting queue (main is full)
@@ -240,7 +249,7 @@ import "github.com/catalinfl/adler/matchmaker"
 
 mm := matchmaking.NewMatchmaker(a, 
     matchmaking.WithRoomSize(4),
-    matchmaking.WithMaxQueue(20),
+    matchmaking.WithQueueLength(20),
 )
 
 a.HandleConnect(func(s *adler.Session) {
@@ -252,6 +261,8 @@ a.HandleMessage(func(s *adler.Session, msg []byte) {
         mm.RemoveFromQueue(s)
     }
 })
+
+// Use adler.WithProtocol(adler.Protobuf) to send queue events as protobuf frames.
 ```
 
 ### 8. Close handling
@@ -274,6 +285,7 @@ Use these options with `adler.New(...)`:
 - `WithMessageBufferSize(int)` sets the outbound queue size; start with 64-256 and increase only if you hit `ErrBufferFull` under normal bursts
 - `WithDispatchAsync(bool)` switches inbound dispatch to goroutine-per-message when enabled
 - `WithDeleteRoomOnEmpty(bool)` controls automatic room deletion when the last session leaves (default: `true`)
+- `WithProtocol(adler.Protocol)` selects `adler.JSON` (default) or `adler.Protobuf` for protocol-aware messaging
 
 ## Notes On Concurrency
 
