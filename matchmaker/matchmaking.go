@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/catalinfl/adler"
-	"github.com/catalinfl/adler/matchmaker/github.com/catalinfl/adler/matchmaking/pb"
 	"github.com/google/uuid"
 )
 
@@ -148,9 +147,9 @@ func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) {
 	}
 
 	if _, exists := m.inQueueMap[s]; exists {
-		msg := &pb.QueueStatus{
-			Payload: &pb.QueueStatus_QueueError{
-				QueueError: &pb.QueueError{
+		msg := &QueueStatus{
+			Payload: &QueueStatus_QueueError{
+				QueueError: &QueueError{
 					Message: "You are already in a queue",
 				},
 			},
@@ -160,9 +159,9 @@ func (m *Matchmaker) handleAddToQueue(s *adler.Session, now time.Time) {
 	}
 
 	if _, exists := m.inWaitQueueMap[s]; exists {
-		msg := &pb.QueueStatus{
-			Payload: &pb.QueueStatus_QueueError{
-				QueueError: &pb.QueueError{
+		msg := &QueueStatus{
+			Payload: &QueueStatus_QueueError{
+				QueueError: &QueueError{
 					Message: "You are already in a queue",
 				},
 			},
@@ -190,9 +189,9 @@ func (m *Matchmaker) addToMainQueue(s *adler.Session, now time.Time) {
 	m.inQueueMap[s] = element
 	delete(m.inWaitQueueMap, s)
 	s.Set(sessionKeyQueueStatus, queueStatusQueued)
-	msg := &pb.QueueStatus{
-		Payload: &pb.QueueStatus_QueueJoined{
-			QueueJoined: &pb.QueueJoined{
+	msg := &QueueStatus{
+		Payload: &QueueStatus_QueueJoined{
+			QueueJoined: &QueueJoined{
 				Message: "You have joined the main queue",
 			},
 		},
@@ -209,9 +208,9 @@ func (m *Matchmaker) addToWaitingQueue(s *adler.Session, now time.Time) {
 	element := m.waitQueue.PushBack(item)
 	m.inWaitQueueMap[s] = element
 	s.Set(sessionKeyQueueStatus, queueStatusWaiting)
-	msg := &pb.QueueStatus{
-		Payload: &pb.QueueStatus_WaitQueueJoined{
-			WaitQueueJoined: &pb.WaitQueueJoined{
+	msg := &QueueStatus{
+		Payload: &QueueStatus_WaitQueueJoined{
+			WaitQueueJoined: &WaitQueueJoined{
 				Message: "The main queue is full. You have joined the waiting queue.",
 			},
 		},
@@ -283,9 +282,9 @@ func (m *Matchmaker) createRoomFromQueue(size int) {
 		player.Set(sessionKeyRoomID, roomID)
 	}
 
-	msg := &pb.QueueStatus{
-		Payload: &pb.QueueStatus_MatchFound{
-			MatchFound: &pb.MatchFound{
+	msg := &QueueStatus{
+		Payload: &QueueStatus_MatchFound{
+			MatchFound: &MatchFound{
 				RoomId:  roomID,
 				Players: int32(len(players)),
 			},
@@ -317,9 +316,9 @@ func (m *Matchmaker) promoteFromWaitingQueue(now time.Time) {
 
 		session.Set(sessionKeyQueueStatus, queueStatusQueued)
 
-		msg := &pb.QueueStatus{
-			Payload: &pb.QueueStatus_PromotedToQueue{
-				PromotedToQueue: &pb.PromotedToQueue{
+		msg := &QueueStatus{
+			Payload: &QueueStatus_PromotedToQueue{
+				PromotedToQueue: &PromotedToQueue{
 					Message: "A spot opened up. You are now in the main queue",
 				},
 			},

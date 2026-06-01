@@ -1,7 +1,7 @@
 syntax = "proto3";
 package matchmaking;
 
-option go_package = "github.com/catalinfl/adler/matchmaking/pb";
+option go_package = "github.com/catalinfl/adler/matchmaking/pb;matchmaking";
 
 message QueueStatus {
     oneof payload {

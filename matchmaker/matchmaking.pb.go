@@ -4,7 +4,7 @@
 // 	protoc        v4.25.9
 // source: matchmaking.proto
 
-package pb
+package matchmaking
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -405,7 +405,7 @@ const file_matchmaking_proto_rawDesc = "" +
 	"\aplayers\x18\x02 \x01(\x05R\aplayers\"&\n" +
 	"\n" +
 	"QueueError\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessageB+Z)github.com/catalinfl/adler/matchmaking/pbb\x06proto3"
+	"\amessage\x18\x01 \x01(\tR\amessageB7Z5github.com/catalinfl/adler/matchmaking/pb;matchmakingb\x06proto3"
 
 var (
 	file_matchmaking_proto_rawDescOnce sync.Once

@@ -13,7 +13,6 @@ import (
 
 	"github.com/catalinfl/adler"
 	matchmaking "github.com/catalinfl/adler/matchmaker"
-	"github.com/catalinfl/adler/matchmaker/github.com/catalinfl/adler/matchmaking/pb"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"google.golang.org/protobuf/proto"
@@ -343,7 +342,7 @@ func TestMatchmakerEightPlayersOneSecondInterval(t *testing.T) {
 
 // waitQueueEventProtobuf reads messages until a protobuf QueueStatus is received,
 // skipping any JSON text messages that may be sent alongside protobuf.
-func waitQueueEventProtobuf(t *testing.T, conn net.Conn) *pb.QueueStatus {
+func waitQueueEventProtobuf(t *testing.T, conn net.Conn) *matchmaking.QueueStatus {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -358,7 +357,7 @@ func waitQueueEventProtobuf(t *testing.T, conn net.Conn) *pb.QueueStatus {
 			continue
 		}
 
-		event := &pb.QueueStatus{}
+		event := &matchmaking.QueueStatus{}
 		if err := proto.Unmarshal(payload, event); err != nil {
 			t.Fatalf("unmarshal protobuf event: %v", err)
 		}
